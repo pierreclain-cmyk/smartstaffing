@@ -1,9 +1,13 @@
 import base64
 import io
+import os
 import re
 import pdfplumber
+import requests
 
-# Référentiel des profils ML du magasin
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://eilyxfhxmscuwbavkpzz.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7hGBQ_hMOZL9i7")
+
 REFERENTIEL_RH = {
     "CEAGLIO Valerie": {"profil": "Sniper ID", "gain_id": 4.2},
     "DIBOINE Simon": {"profil": "Sprinter VMA", "gain_id": 3.8},
@@ -15,7 +19,7 @@ REFERENTIEL_RH = {
     "Guillaume": {"profil": "Capitaine", "gain_id": 1.8},
 }
 
-def process_planning_pdf(file_b64):
+def process_planning_pdf(file_b64, filename="planning.pdf"):
     pdf_bytes = base64.b64decode(file_b64)
     pdf_file = io.BytesIO(pdf_bytes)
 
@@ -28,15 +32,19 @@ def process_planning_pdf(file_b64):
 
     lines = [line.strip() for line in extracted_text.split("\n") if line.strip()]
 
-    # 1. Analyse par bloc de ligne pour repérer les plannings enregistrés
-    planning_realise = []
-    collaborateurs_trouves = set()
+    equipe_match = re.search(r"Nom Equipe:\s*(.*)", extracted_text)
+    semaine_match = re.search(r"PLANNING\s+(?:REALISE|PREVISIONNEL)\s+S(\d+)", extracted_text)
 
-    # Pattern de détection des collaborateurs Decathlon
+    nom_equipe = equipe_match.group(1).strip() if equipe_match else "Cashier Services"
+    num_semaine = semaine_match.group(1) if semaine_match else "36"
+    semaine_iso = f"2026-S{num_semaine.zfill(2)}"
+
+    collaborateurs_trouves = set()
     collab_pattern = re.compile(r"^([A-Z]{2,}\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)$")
 
+    planning_realise = []
     current_day = "Samedi 05/09/2026"
-    
+
     for i, line in enumerate(lines):
         if any(j in line.lower() for j in ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]) and "/" in line:
             current_day = line
@@ -45,7 +53,6 @@ def process_planning_pdf(file_b64):
             nom_collab = line
             collaborateurs_trouves.add(nom_collab)
             
-            # Recherche des heures effectives sur les sous-lignes
             type_activite = "Repos / RH"
             creneau_stricte = "00:00 - 00:00"
             
@@ -60,14 +67,10 @@ def process_planning_pdf(file_b64):
                     dur_match = re.search(r"(\d{2}:\d{2})\s+(\d{2}:\d{2})", sub)
                     if dur_match:
                         dur = dur_match.group(1)
-                        if dur == "08:45":
-                            creneau_stricte = "09:15 - 18:00"
-                        elif dur == "05:00":
-                            creneau_stricte = "08:00 - 13:00"
-                        elif dur == "06:00":
-                            creneau_stricte = "13:00 - 19:00"
-                        else:
-                            creneau_stricte = f"Durée : {dur}"
+                        if dur == "08:45": creneau_stricte = "09:15 - 18:00"
+                        elif dur == "05:00": creneau_stricte = "08:00 - 13:00"
+                        elif dur == "06:00": creneau_stricte = "13:00 - 19:00"
+                        else: creneau_stricte = f"Durée : {dur}"
 
             profil_info = REFERENTIEL_RH.get(nom_collab, {"profil": "Polyvalent", "gain_id": 2.0})
 
@@ -82,9 +85,6 @@ def process_planning_pdf(file_b64):
                 "gain_id": f"+{profil_info['gain_id']} % ID",
                 "action": "Conforme au fichier RH" if type_activite != "Repos / RH" else "Axe d'optimisation"
             })
-
-    # 2. Recommandations RH & ML pour les collaborateurs absents ou non positionnés en Caisse
-    noms_trouves = {p["nom"] for p in planning_realise if p["activite"] == "Caisse"}
 
     recommandations_ml = [
         {
@@ -112,11 +112,51 @@ def process_planning_pdf(file_b64):
     ]
 
     total_planning = planning_realise + recommandations_ml
+    gain_id_total = 6.1
+
+    # ARCHIVAGE AUTOMATIQUE DANS SUPABASE
+    sauvegarder_dans_supabase(
+        filename=filename,
+        semaine_iso=semaine_iso,
+        nom_equipe=nom_equipe,
+        equipiers_count=len(collaborateurs_trouves),
+        couverture=88,
+        sous_effectifs=len(recommandations_ml),
+        gain_id=gain_id_total,
+        planning_json=total_planning
+    )
 
     return {
+        "equipe": nom_equipe,
+        "semaine": num_semaine,
+        "semaine_iso": semaine_iso,
         "equipiersCount": len(collaborateurs_trouves),
         "couverture": 88,
         "sousEffectifs": len(recommandations_ml),
-        "gainTotalID": "+6.1 % ID Global",
+        "gainTotalID": f"+{gain_id_total} % ID Global",
         "planning": total_planning
     }
+
+def sauvegarder_dans_supabase(filename, semaine_iso, nom_equipe, equipiers_count, couverture, sous_effectifs, gain_id, planning_json):
+    endpoint = f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal"
+    }
+    payload = {
+        "nom_fichier": filename,
+        "semaine_iso": semaine_iso,
+        "nom_equipe": nom_equipe,
+        "equipiers_count": equipiers_count,
+        "couverture_rush": couverture,
+        "sous_effectifs_count": sous_effectifs,
+        "gain_id_estime": gain_id,
+        "planning_json": planning_json,
+        "status_execution": "ARCHIVE"
+    }
+    try:
+        requests.post(endpoint, json=payload, headers=headers, timeout=5)
+    except Exception as e:
+        print(f"Erreur d'archivage Supabase : {e}")
