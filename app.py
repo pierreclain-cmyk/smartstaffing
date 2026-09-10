@@ -4,10 +4,9 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from pdf_staffing import process_planning_pdf
+from interim_parser import process_interim_csv  # 🔥 AJOUT MANQUANT
 from ai_agent import StaffingAutonomousAgent
 from planning_generator import PlanningGenerator
-
-from interim_parser import process_interim_csv
 
 app = Flask(__name__)
 CORS(app)
@@ -17,8 +16,9 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7
 
 @app.route("/", methods=["GET"])
 def health_check():
-    return jsonify({"status": "online", "mode": "PDF Parser + MLOps"}), 200
+    return jsonify({"status": "online", "mode": "PDF/CSV Parser + MLOps"}), 200
 
+# --- ROUTE 1 : TITULAIRES (PDF) ---
 @app.route("/analyze-planning-pdf", methods=["POST"])
 def analyze_pdf():
     try:
@@ -30,6 +30,19 @@ def analyze_pdf():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
+# --- ROUTE 2 : INTÉRIMAIRES (CSV) 🔥 ---
+@app.route("/analyze-interim-csv", methods=["POST"])
+def analyze_interim():
+    try:
+        data = request.get_json()
+        if not data or "file_data" not in data:
+            return jsonify({"success": False, "message": "Aucun fichier transmis."}), 400
+        result = process_interim_csv(data.get("file_data"))
+        return jsonify({"success": True, "data": result}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# --- ROUTES SUPABASE ---
 @app.route("/dernier-planning", methods=["GET"])
 def get_dernier_planning():
     endpoint = f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf?select=planning_json,equipiers_count,couverture_rush,sous_effectifs_count,gain_id_estime,semaine_iso&order=created_at.desc&limit=1"
@@ -66,6 +79,7 @@ def get_historique_plannings():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
+# --- ROUTES IA ---
 @app.route("/agent-analyze", methods=["POST"])
 def run_agent_analysis():
     try:
@@ -100,15 +114,3 @@ def trigger_real_time_monitor():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
-@app.route("/analyze-interim-csv", methods=["POST"])
-def analyze_interim():
-    try:
-        data = request.get_json()
-        if not data or "file_data" not in data:
-            return jsonify({"success": False, "message": "Aucun fichier transmis."}), 400
-
-        result = process_interim_csv(data.get("file_data"))
-        return jsonify({"success": True, "data": result}), 200
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
