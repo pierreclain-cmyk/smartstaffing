@@ -67,13 +67,12 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
                     if "Vente" in sub: type_activite = "Vente"
                     elif any(k in sub for k in ["Caisse", "Accueil", "QCO", "Demenagmt"]): type_activite = "Caisse"
                     
-                    dur_match = re.search(r"(\d{2}:\d{2})\s+(\d{2}:\d{2})", sub)
-                    if dur_match:
-                        dur = dur_match.group(1)
-                        if dur == "08:45": creneau_stricte = "09:15 - 18:00"
-                        elif dur == "05:00": creneau_stricte = "08:00 - 13:00"
-                        elif dur == "06:00": creneau_stricte = "13:00 - 19:00"
-                        elif dur != "00:00": creneau_stricte = f"Durée : {dur}"
+                    # 🔥 Détection dynamique des heures exactes
+                    time_match = re.search(r"(\d{2}[:h]\d{2}).*?(\d{2}[:h]\d{2})", sub)
+                    if time_match:
+                        start = time_match.group(1).replace('h', ':')
+                        end = time_match.group(2).replace('h', ':')
+                        creneau_stricte = f"{start} - {end}"
 
             profil_info = REFERENTIEL_RH.get(nom_trouve, {"profil": "Polyvalent", "gain_id": 1.5, "rayon": "Caisse"})
             planning_realise.append({
@@ -89,28 +88,47 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
                 "action": "Conforme" if type_activite != "Repos / RH" else "Axe d'optimisation"
             })
 
+    # 🔥 CALCUL DYNAMIQUE DE LA COUVERTURE RUSH (15h - 18h)
+    staff_en_rush = 0
+    for p in planning_realise:
+        if p["status"] != "Repos" and "-" in p["creneau"]:
+            try:
+                debut = int(p["creneau"].split("-")[0].strip().split(":")[0])
+                fin = int(p["creneau"].split("-")[1].strip().split(":")[0])
+                if debut <= 15 and fin >= 17:  # Présent au cœur du rush
+                    staff_en_rush += 1
+            except:
+                pass
+            
+    # Objectif magasin arbitraire : 4 personnes (VMA + Accueil) pour un rush fluide
+    couverture_calculee = min(100, int((staff_en_rush / 4) * 100)) if staff_en_rush > 0 else 45
+    sous_effectif_calc = max(0, 4 - staff_en_rush)
+
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
     payload = {
         "nom_fichier": filename,
         "semaine_iso": semaine_iso,
         "nom_equipe": nom_equipe,
         "equipiers_count": len(collaborateurs_trouves),
-        "couverture_rush": 88,
-        "sous_effectifs_count": 0,
+        "couverture_rush": couverture_calculee,
+        "sous_effectifs_count": sous_effectif_calc,
         "gain_id_estime": 6.1,
         "planning_json": planning_realise,
         "status_execution": "ARCHIVE"
     }
-    try: requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload, headers=headers, timeout=5)
-    except: pass
+    
+    try: 
+        requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload, headers=headers, timeout=5)
+    except: 
+        pass
 
     return {
         "equipe": nom_equipe,
         "semaine": num_semaine,
         "semaine_iso": semaine_iso,
         "equipiersCount": len(collaborateurs_trouves),
-        "couverture": 88,
-        "sousEffectifs": 0,
+        "couverture": couverture_calculee,
+        "sousEffectifs": sous_effectif_calc,
         "gainTotalID": "+6.1 % ID Global",
         "planning": planning_realise
     }
