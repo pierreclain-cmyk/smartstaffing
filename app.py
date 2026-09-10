@@ -4,7 +4,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 # Imports des modules métiers
-from excel_staffing import process_planning_excel
+from pdf_staffing import process_planning_pdf
 from ai_agent import StaffingAutonomousAgent
 from planning_generator import PlanningGenerator
 
@@ -18,7 +18,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7
 
 
 # ==========================================
-# 2. ROUTES DE DIAGNOSTIC ET FICHIERS (CURATIF)
+# 2. ROUTES DE DIAGNOSTIC (PDF)
 # ==========================================
 
 @app.route("/", methods=["GET"])
@@ -26,19 +26,19 @@ def health_check():
     return jsonify({
         "status": "online",
         "service": "IdentiFid Omni-Staffing API",
-        "mode": "Excel/CSV Parser + Generative AI"
+        "mode": "PDF Parser + Generative AI"
     }), 200
 
-@app.route("/analyze-planning-file", methods=["POST"])
-def analyze_file():
+@app.route("/analyze-planning-pdf", methods=["POST"])
+def analyze_pdf():
     try:
         data = request.get_json()
         if not data or "file_data" not in data:
             return jsonify({"success": False, "message": "Aucun fichier transmis."}), 400
 
-        result = process_planning_excel(
+        result = process_planning_pdf(
             data.get("file_data"), 
-            filename=data.get("filename", "planning.xlsx")
+            filename=data.get("filename", "planning.pdf")
         )
         return jsonify({"success": True, "data": result}), 200
     except Exception as e:
@@ -51,7 +51,6 @@ def analyze_file():
 
 @app.route("/dernier-planning", methods=["GET"])
 def get_dernier_planning():
-    # Note : la table s'appelle toujours historique_plannings_pdf par héritage
     endpoint = f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf?select=planning_json,equipiers_count,couverture_rush,sous_effectifs_count,gain_id_estime,semaine_iso&order=created_at.desc&limit=1"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -95,7 +94,7 @@ def get_historique_plannings():
 
 
 # ==========================================
-# 4. ROUTES D'INTELLIGENCE ARTIFICIELLE (PRÉDICTIF & GÉNÉRATIF)
+# 4. ROUTES D'INTELLIGENCE ARTIFICIELLE
 # ==========================================
 
 @app.route("/agent-analyze", methods=["POST"])
@@ -105,7 +104,8 @@ def run_agent_analysis():
         planning_data = data.get("planning_data", {})
         
         agent = StaffingAutonomousAgent(planning_data)
-        rapport = agent.analyser_pdf_et_decider() 
+        # Note: assure-toi que la méthode s'appelle bien analyser_et_decider dans ai_agent.py
+        rapport = agent.analyser_et_decider() 
         return jsonify({"success": True, "rapport_agent": rapport}), 200
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
@@ -131,7 +131,7 @@ def api_generer_planning():
 @app.route("/cron/morning-briefing", methods=["GET", "POST"])
 def trigger_morning_briefing():
     try:
-        agent = StaffingAutonomousAgent()
+        agent = StaffingAutonomousAgent({})
         result = agent.generer_briefing_matin()
         return jsonify({"success": True, "data": result}), 200
     except Exception as e:
@@ -140,7 +140,7 @@ def trigger_morning_briefing():
 @app.route("/cron/real-time-monitor", methods=["GET", "POST"])
 def trigger_real_time_monitor():
     try:
-        agent = StaffingAutonomousAgent()
+        agent = StaffingAutonomousAgent({})
         result = agent.surveiller_temps_reel()
         return jsonify({"success": True, "data": result}), 200
     except Exception as e:
