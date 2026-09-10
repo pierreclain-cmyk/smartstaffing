@@ -25,10 +25,15 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
     pdf_file = io.BytesIO(pdf_bytes)
     extracted_text = ""
     
-    with pdfplumber.open(pdf_file) as pdf:
+with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
+            # Extraction standard
             text = page.extract_text()
-            if text: extracted_text += text + "\n"
+            if text: 
+                extracted_text += text + "\n"
+            
+            # 🔥 CRUCIAL : Libération forcée de la RAM après chaque page
+            page.flush_cache()
 
     lines = [line.strip() for line in extracted_text.split("\n") if line.strip()]
     
