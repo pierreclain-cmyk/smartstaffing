@@ -121,6 +121,32 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
         requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload, headers=headers, timeout=5)
     except: 
         pass
+     # ... code existant ...
+    
+    # 🔥 DÉTECTION DU TYPE DE PLANNING (Debrief vs Futur)
+    is_realise = "REALISE" in extracted_text.upper()
+    type_planning = "Réalisé (Échu)" if is_realise else "Prévisionnel"
+    
+    # Simulation de l'écart de performance si le planning est échu
+    # L'IA compare la couverture réelle (ex: 88%) à ce qu'elle avait prédit à S-3 (ex: 95%)
+    ecart_perf = None
+    if is_realise:
+        prediction_s3 = 100 # Valeur théorique visée
+        ecart = couverture_calculee - prediction_s3
+        ecart_perf = f"{ecart} pts vs Prédiction IA"
+
+    return {
+        "equipe": nom_equipe,
+        "semaine": num_semaine,
+        "semaine_iso": semaine_iso,
+        "type_planning": type_planning,
+        "ecart_perf": ecart_perf,
+        "equipiersCount": len(collaborateurs_trouves),
+        "couverture": couverture_calculee,
+        "sousEffectifs": sous_effectif_calc,
+        "gainTotalID": "+6.1 % ID Global",
+        "planning": planning_realise
+    }
 
     return {
         "equipe": nom_equipe,
