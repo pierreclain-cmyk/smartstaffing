@@ -7,6 +7,8 @@ from pdf_staffing import process_planning_pdf
 from ai_agent import StaffingAutonomousAgent
 from planning_generator import PlanningGenerator
 
+from interim_parser import process_interim_csv
+
 app = Flask(__name__)
 CORS(app)
 
@@ -98,3 +100,15 @@ def trigger_real_time_monitor():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
+@app.route("/analyze-interim-csv", methods=["POST"])
+def analyze_interim():
+    try:
+        data = request.get_json()
+        if not data or "file_data" not in data:
+            return jsonify({"success": False, "message": "Aucun fichier transmis."}), 400
+
+        result = process_interim_csv(data.get("file_data"))
+        return jsonify({"success": True, "data": result}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
