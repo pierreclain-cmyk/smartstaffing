@@ -11,23 +11,23 @@ class MoteurPenibilite:
         }
 
 class PlanningGenerator:
-    def __init__(self, budget_heures, jour_cible="Samedi"):
+    def __init__(self, budget_heures, jour_cible="Samedi", semaine_cible="S+3"):
         self.budget = budget_heures
         self.jour_cible = jour_cible
+        self.semaine_cible = semaine_cible
         self.moteur_fatigue = MoteurPenibilite()
         self.equipe = list(self.moteur_fatigue.fatigue_db.keys())
         self.ml_insights = RetailMLPredictor().learn_patterns()
 
     def generer_scenarios(self):
         binome = self.ml_insights["binomes_magiques"][0] if self.ml_insights["binomes_magiques"] else None
-        desc_perf = f"Force le binôme {binome['collabs'][0].split(' ')[1]}/{binome['collabs'][1].split(' ')[1]}." if binome else "Optimisation caisse."
-
+        
         return {
             "insights_ml": self.ml_insights,
             "scenarios": {
-                "A": {"nom": f"Option A ({self.jour_cible}) : Budget Strict", "heures_consommees": int(self.budget * 0.9), "gain_id": "+1.2 %", "score_penibilite": "⚠️ Élevé (78/100)", "description": "Respect strict de la masse salariale.", "planning": self._generer_repartition("budget")},
-                "B": {"nom": f"Option B ({self.jour_cible}) : Perf Max", "heures_consommees": int(self.budget * 1.15), "gain_id": binome["impact"] if binome else "+4.0 %", "score_penibilite": "Moyen (55/100)", "description": desc_perf, "planning": self._generer_repartition("perf")},
-                "C": {"nom": f"Option C ({self.jour_cible}) : IA MLOps", "heures_consommees": self.budget, "gain_id": "+4.1 %", "score_penibilite": "✅ Optimal (30/100)", "description": "Respect des repos appris par IA.", "planning": self._generer_repartition("equilibre")}
+                "A": {"nom": f"Option A ({self.semaine_cible} - {self.jour_cible})", "heures_consommees": int(self.budget * 0.9), "gain_id": "+1.2 %", "score_penibilite": "⚠️ Élevé", "description": "Budget strict.", "planning": self._generer_repartition("budget")},
+                "B": {"nom": f"Option B ({self.semaine_cible} - {self.jour_cible})", "heures_consommees": int(self.budget * 1.15), "gain_id": binome["impact"] if binome else "+4.0 %", "score_penibilite": "Moyen", "description": "Perf Max.", "planning": self._generer_repartition("perf")},
+                "C": {"nom": f"Option C ({self.semaine_cible} - {self.jour_cible})", "heures_consommees": self.budget, "gain_id": "+4.1 %", "score_penibilite": "✅ Optimal", "description": "Proposition IA MLOps prête pour export.", "planning": self._generer_repartition("equilibre")}
             }
         }
 
@@ -36,8 +36,6 @@ class PlanningGenerator:
         for nom in self.equipe:
             profil = self.moteur_fatigue.fatigue_db[nom]
             activite, creneau = "Caisse", "10:00 - 17:00"
-            
-            # Repos adaptatif selon le jour choisi !
             if strategie == "equilibre":
                 if self.ml_insights["habitudes_repos"].get(nom) == self.jour_cible:
                     activite, creneau = "Repos (Appris)", "00:00 - 00:00"
@@ -45,6 +43,5 @@ class PlanningGenerator:
                     activite, creneau = "Vente (Allégé)", "09:00 - 14:00"
             elif strategie == "perf" and profil["profil"] in ["Expert Rush", "Sniper ID", "Sprinter VMA"]:
                 creneau = "13:00 - 19:30"
-                
             planning.append({"nom": nom, "jour": self.jour_cible, "profil": profil["profil"], "activite": activite, "creneau": creneau, "fatigue_init": profil["fatigue"]})
         return planning
