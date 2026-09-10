@@ -16,7 +16,8 @@ REFERENTIEL_RH = {
     "BITOUN Clara": {"profil": "Polyvalent", "gain_id": 2.0, "rayon": "Accueil"},
     "CLARION Fabienne": {"profil": "Renfort", "gain_id": 1.5, "rayon": "Caisse"},
     "D'ORIA Christelle": {"profil": "Expert Vente", "gain_id": 0.0, "rayon": "Rayon"},
-    "RAOUX HUGO": {"profil": "Renfort VMA", "gain_id": 3.0, "rayon": "Caisse"}
+    "RAOUX HUGO": {"profil": "Renfort VMA", "gain_id": 3.0, "rayon": "Caisse"},
+    "BRUN MYLENE": {"profil": "Renfort VMA", "gain_id": 2.5, "rayon": "Caisse"}
 }
 
 def process_planning_pdf(file_b64, filename="planning.pdf"):
@@ -25,7 +26,8 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
     extracted_text = ""
     
     with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
+        # On limite aux 4 premières pages pour capturer la Semaine S10 sans saturer
+        for page in pdf.pages[:4]:
             text = page.extract_text()
             if text: 
                 extracted_text += text + "\n"
@@ -41,43 +43,41 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
     semaine_iso = f"2026-S{num_semaine.zfill(2)}"
 
     collaborateurs_trouves = set()
-    
-    # 🔥 REGEX CORRIGÉE : Accepte MAJUSCULES, apostrophes (D'ORIA), et ignore le "V" ou "VR" de statut en fin de ligne
-    collab_pattern = re.compile(r"^([A-Z\d\'\-\s]{2,}\s+[A-Za-z\d\'\-]+)(?:\s+(?:V|VR|DR|D|ND))?$")
-
     planning_realise = []
     current_day = "Lundi 02/03/2026"
 
-    # Mots clés à ignorer absolument pour éviter les faux positifs (Entêtes du PDF)
-    mots_cles_ignores = ["NOM EQUIPE", "NOM DU PATRON", "DECATHLON", "PLANNING REALISE", "INFORMATION D'IMPRESSION", "ETAT", "DESCRIPTION"]
-
     for i, line in enumerate(lines):
+        # 1. NETTOYAGE DU JOUR (Élimine les "Etat 1 2 3 4...")
         if any(j in line.lower() for j in ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]) and "/" in line:
-            current_day = line
+            clean_day = line.split("Etat")[0].strip()
+            current_day = clean_day
 
-        # Nettoyage de la ligne
-        line_clean = line.upper()
-        if any(ignore in line_clean for ignore in mots_cles_ignores):
-            continue
+        # 2. DÉTECTION ROBUSTE DU NOM (Titulaires + Renforts)
+        # On cherche si un nom connu du Référentiel apparaît dans la ligne
+        nom_trouve = None
+        for ref_nom in REFERENTIEL_RH.keys():
+            if ref_nom.upper() in line.upper():
+                nom_trouve = ref_nom
+                break
+        
+        # Fallback pour les personnes hors référentiel (Mots en majuscules + prénom)
+        if not nom_trouve and re.match(r"^[A-Z\d\'\-\s]{2,}\s+[A-Za-z]+", line):
+            if not any(k in line.upper() for k in ["DECATHLON", "PLANNING", "EQUIPE", "PATRON", "INFORMATION", "ETAT"]):
+                nom_trouve = line.split("V")[0].split("113")[0].strip()
 
-        match = collab_pattern.match(line)
-        if match:
-            nom_collab = match.group(1).strip()
-            
-            # Filtre additionnel sur la longueur minimale du nom
-            if len(nom_collab) < 4 or nom_collab.startswith("113-"):
-                continue
-
-            collaborateurs_trouves.add(nom_collab)
+        if nom_trouve and len(nom_trouve) > 3:
+            collaborateurs_trouves.add(nom_trouve)
             type_activite = "Repos / RH"
             creneau_stricte = "00:00 - 00:00"
             
-            # Analyse des lignes d'activités sous le nom du collaborateur
-            for offset in range(1, 5):
+            # Analyse des sous-lignes (Créneaux / Activités)
+            for offset in range(1, 4):
                 if i + offset < len(lines):
                     sub = lines[i + offset]
-                    if "Vente" in sub: type_activite = "Vente"
-                    elif "Caisse" in sub or "Accueil" in sub or "QCO" in sub: type_activite = "Caisse"
+                    if "Vente" in sub: 
+                        type_activite = "Vente"
+                    elif "Caisse" in sub or "Accueil" in sub or "QCO" in sub or "Demenagmt" in sub: 
+                        type_activite = "Caisse"
                     
                     dur_match = re.search(r"(\d{2}:\d{2})\s+(\d{2}:\d{2})", sub)
                     if dur_match:
@@ -87,10 +87,10 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
                         elif dur == "06:00": creneau_stricte = "13:00 - 19:00"
                         elif dur != "00:00": creneau_stricte = f"Durée : {dur}"
 
-            profil_info = REFERENTIEL_RH.get(nom_collab, {"profil": "Polyvalent", "gain_id": 1.5, "rayon": "Caisse"})
+            profil_info = REFERENTIEL_RH.get(nom_trouve, {"profil": "Polyvalent", "gain_id": 1.5, "rayon": "Caisse"})
 
             planning_realise.append({
-                "nom": nom_collab,
+                "nom": nom_trouve,
                 "jour": current_day,
                 "creneau": creneau_stricte,
                 "activite": type_activite,
