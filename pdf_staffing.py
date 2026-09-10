@@ -8,7 +8,6 @@ import requests
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://eilyxfhxmscuwbavkpzz.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7hGBQ_hMOZL9i7")
 
-# Référentiel étendu avec notion de Rayon et Perf de référence
 REFERENTIEL_RH = {
     "CEAGLIO Valerie": {"profil": "Sniper ID", "gain_id": 4.2, "rayon": "Caisse"},
     "DIBOINE Simon": {"profil": "Sprinter VMA", "gain_id": 3.8, "rayon": "Caisse"},
@@ -25,14 +24,12 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
     pdf_file = io.BytesIO(pdf_bytes)
     extracted_text = ""
     
-with pdfplumber.open(pdf_file) as pdf:
+    with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
-            # Extraction standard
             text = page.extract_text()
             if text: 
                 extracted_text += text + "\n"
-            
-            # 🔥 CRUCIAL : Libération forcée de la RAM après chaque page
+            # Purge immédiate de la mémoire pour éviter le timeout Render
             page.flush_cache()
 
     lines = [line.strip() for line in extracted_text.split("\n") if line.strip()]
