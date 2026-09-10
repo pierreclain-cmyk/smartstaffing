@@ -67,5 +67,23 @@ def run_agent_analysis():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
+@app.route("/cron/morning-briefing", methods=["GET", "POST"])
+def trigger_morning_briefing():
+    try:
+        agent = StaffingAutonomousAgent()
+        result = agent.generer_briefing_matin()
+        return jsonify({"success": True, "data": result}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route("/cron/real-time-monitor", methods=["GET", "POST"])
+def trigger_real_time_monitor():
+    try:
+        agent = StaffingAutonomousAgent()
+        result = agent.surveiller_temps_reel()
+        return jsonify({"success": True, "data": result}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
