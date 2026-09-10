@@ -89,10 +89,11 @@ def run_agent_analysis():
 def api_generer_planning():
     try:
         data = request.get_json() or {}
-        generateur = PlanningGenerator(budget_heures=int(data.get("budget_heures", 350)))
+        # Récupère le jour cible envoyé par le frontend
+        jour_cible = data.get("jour_cible", "Samedi")
+        budget = int(data.get("budget_heures", 350))
+        
+        generateur = PlanningGenerator(budget_heures=budget, jour_cible=jour_cible)
         return jsonify({"success": True, "data": generateur.generer_scenarios()}), 200
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
