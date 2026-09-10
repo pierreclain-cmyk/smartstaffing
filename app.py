@@ -4,7 +4,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from pdf_staffing import process_planning_pdf
-from interim_parser import process_interim_csv  # 🔥 AJOUT MANQUANT
+from interim_parser import process_interim_csv
 from ai_agent import StaffingAutonomousAgent
 from planning_generator import PlanningGenerator
 
@@ -16,9 +16,8 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7
 
 @app.route("/", methods=["GET"])
 def health_check():
-    return jsonify({"status": "online", "mode": "PDF/CSV Parser + MLOps"}), 200
+    return jsonify({"status": "online", "mode": "Production"}), 200
 
-# --- ROUTE 1 : TITULAIRES (PDF) ---
 @app.route("/analyze-planning-pdf", methods=["POST"])
 def analyze_pdf():
     try:
@@ -30,7 +29,6 @@ def analyze_pdf():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-# --- ROUTE 2 : INTÉRIMAIRES (CSV) 🔥 ---
 @app.route("/analyze-interim-csv", methods=["POST"])
 def analyze_interim():
     try:
@@ -42,7 +40,6 @@ def analyze_interim():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-# --- ROUTES SUPABASE ---
 @app.route("/dernier-planning", methods=["GET"])
 def get_dernier_planning():
     endpoint = f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf?select=planning_json,equipiers_count,couverture_rush,sous_effectifs_count,gain_id_estime,semaine_iso&order=created_at.desc&limit=1"
@@ -79,7 +76,6 @@ def get_historique_plannings():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-# --- ROUTES IA ---
 @app.route("/agent-analyze", methods=["POST"])
 def run_agent_analysis():
     try:
@@ -95,20 +91,6 @@ def api_generer_planning():
         data = request.get_json() or {}
         generateur = PlanningGenerator(budget_heures=int(data.get("budget_heures", 350)))
         return jsonify({"success": True, "data": generateur.generer_scenarios()}), 200
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
-@app.route("/cron/morning-briefing", methods=["GET", "POST"])
-def trigger_morning_briefing():
-    try:
-        return jsonify({"success": True, "data": StaffingAutonomousAgent({}).generer_briefing_matin()}), 200
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
-@app.route("/cron/real-time-monitor", methods=["GET", "POST"])
-def trigger_real_time_monitor():
-    try:
-        return jsonify({"success": True, "data": StaffingAutonomousAgent({}).surveiller_temps_reel()}), 200
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
