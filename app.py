@@ -4,6 +4,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from pdf_staffing import process_planning_pdf
 from ai_agent import StaffingAutonomousAgent
+from planning_generator import PlanningGenerator
 
 app = Flask(__name__)
 CORS(app)
@@ -82,6 +83,19 @@ def trigger_real_time_monitor():
         agent = StaffingAutonomousAgent()
         result = agent.surveiller_temps_reel()
         return jsonify({"success": True, "data": result}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route("/generer-planning", methods=["POST"])
+def api_generer_planning():
+    try:
+        data = request.get_json() or {}
+        budget_heures = data.get("budget_heures", 350)
+        
+        generateur = PlanningGenerator(budget_heures=budget_heures, contraintes={})
+        scenarios = generateur.generer_scenarios()
+        
+        return jsonify({"success": True, "scenarios": scenarios}), 200
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
