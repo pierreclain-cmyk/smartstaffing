@@ -39,23 +39,24 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
     semaine_iso = f"2026-S{num_semaine.zfill(2)}"
 
     collaborateurs_trouves = set()
-    collab_pattern = re.compile(r"^([A-Z\d\'\-\s]{2,}\s+[A-Za-z\d\'\-]+)(?:\s+(?:V|VR|DR|D|ND))?$")
     planning_realise = []
     current_day = "Lundi 02/03/2026"
-    mots_cles_ignores = ["NOM EQUIPE", "NOM DU PATRON", "DECATHLON", "PLANNING REALISE", "INFORMATION D'IMPRESSION", "ETAT", "DESCRIPTION"]
 
     for i, line in enumerate(lines):
         if any(j in line.lower() for j in ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]) and "/" in line:
             current_day = line.split("Etat")[0].strip()
 
-        line_clean = line.upper()
-        if any(ignore in line_clean for ignore in mots_cles_ignores): continue
+        nom_trouve = None
+        for ref_nom in REFERENTIEL_RH.keys():
+            if ref_nom.upper() in line.upper():
+                nom_trouve = ref_nom
+                break
+        
+        if not nom_trouve and re.match(r"^[A-Z\d\'\-\s]{2,}\s+[A-Za-z]+", line):
+            if not any(k in line.upper() for k in ["DECATHLON", "PLANNING", "EQUIPE", "PATRON", "INFORMATION", "ETAT"]):
+                nom_trouve = line.split("V")[0].split("113")[0].strip()
 
-        nom_trouve = next((ref for ref in REFERENTIEL_RH.keys() if ref.upper() in line_clean), None)
-        if not nom_trouve and collab_pattern.match(line):
-            nom_trouve = line.split("V")[0].split("113")[0].strip()
-
-        if nom_trouve and len(nom_trouve) > 3 and not nom_trouve.startswith("113-"):
+        if nom_trouve and len(nom_trouve) > 3:
             collaborateurs_trouves.add(nom_trouve)
             type_activite = "Repos / RH"
             creneau_stricte = "00:00 - 00:00"
@@ -88,19 +89,28 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
                 "action": "Conforme" if type_activite != "Repos / RH" else "Axe d'optimisation"
             })
 
-    endpoint = f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf"
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
     payload = {
-        "nom_fichier": filename, "semaine_iso": semaine_iso, "nom_equipe": nom_equipe,
-        "equipiers_count": len(collaborateurs_trouves), "couverture_rush": 88,
-        "sous_effectifs_count": 0, "gain_id_estime": 6.1, "planning_json": planning_realise,
+        "nom_fichier": filename,
+        "semaine_iso": semaine_iso,
+        "nom_equipe": nom_equipe,
+        "equipiers_count": len(collaborateurs_trouves),
+        "couverture_rush": 88,
+        "sous_effectifs_count": 0,
+        "gain_id_estime": 6.1,
+        "planning_json": planning_realise,
         "status_execution": "ARCHIVE"
     }
-    try: requests.post(endpoint, json=payload, headers=headers, timeout=5)
+    try: requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload, headers=headers, timeout=5)
     except: pass
 
     return {
-        "equipe": nom_equipe, "semaine": num_semaine, "semaine_iso": semaine_iso,
-        "equipiersCount": len(collaborateurs_trouves), "couverture": 88,
-        "sousEffectifs": 0, "gainTotalID": "+6.1 % ID Global", "planning": planning_realise
+        "equipe": nom_equipe,
+        "semaine": num_semaine,
+        "semaine_iso": semaine_iso,
+        "equipiersCount": len(collaborateurs_trouves),
+        "couverture": 88,
+        "sousEffectifs": 0,
+        "gainTotalID": "+6.1 % ID Global",
+        "planning": planning_realise
     }
