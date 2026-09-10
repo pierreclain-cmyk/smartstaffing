@@ -2,33 +2,61 @@ import os
 import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from pdf_staffing import process_planning_pdf
+
+# Imports des modules métiers
+from excel_staffing import process_planning_excel
 from ai_agent import StaffingAutonomousAgent
 from planning_generator import PlanningGenerator
 
+# 1. INITIALISATION
 app = Flask(__name__)
 CORS(app)
 
+# Configuration Supabase
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://eilyxfhxmscuwbavkpzz.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7hGBQ_hMOZL9i7")
 
+
+# ==========================================
+# 2. ROUTES DE DIAGNOSTIC ET FICHIERS (CURATIF)
+# ==========================================
+
 @app.route("/", methods=["GET"])
 def health_check():
-    return jsonify({"status": "online", "service": "IdentiFid Omni-Staffing API"}), 200
+    return jsonify({
+        "status": "online",
+        "service": "IdentiFid Omni-Staffing API",
+        "mode": "Excel/CSV Parser + Generative AI"
+    }), 200
 
-@app.route("/analyze-planning-pdf", methods=["POST"])
-def analyze_pdf():
+@app.route("/analyze-planning-file", methods=["POST"])
+def analyze_file():
     try:
         data = request.get_json()
-        result = process_planning_pdf(data.get("file_data"), filename=data.get("filename", "planning.pdf"))
+        if not data or "file_data" not in data:
+            return jsonify({"success": False, "message": "Aucun fichier transmis."}), 400
+
+        result = process_planning_excel(
+            data.get("file_data"), 
+            filename=data.get("filename", "planning.xlsx")
+        )
         return jsonify({"success": True, "data": result}), 200
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
+
+# ==========================================
+# 3. ROUTES SUPABASE (HISTORIQUE)
+# ==========================================
+
 @app.route("/dernier-planning", methods=["GET"])
 def get_dernier_planning():
+    # Note : la table s'appelle toujours historique_plannings_pdf par héritage
     endpoint = f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf?select=planning_json,equipiers_count,couverture_rush,sous_effectifs_count,gain_id_estime,semaine_iso&order=created_at.desc&limit=1"
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
     try:
         res = requests.get(endpoint, headers=headers, timeout=5)
         data = res.json()
@@ -45,28 +73,60 @@ def get_dernier_planning():
                     "planning": last.get("planning_json", [])
                 }
             }), 200
-        return jsonify({"success": False, "message": "Aucun archivage"}), 404
+        else:
+            return jsonify({"success": False, "message": "Aucun archivage trouvé"}), 404
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route("/historique-plannings", methods=["GET"])
 def get_historique_plannings():
     endpoint = f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf?select=id,created_at,nom_fichier,semaine_iso,equipiers_count,couverture_rush,gain_id_estime&order=created_at.desc&limit=20"
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
     try:
         res = requests.get(endpoint, headers=headers, timeout=5)
-        return jsonify({"success": True, "data": res.json()}), 200
+        if res.status_code == 200:
+            return jsonify({"success": True, "data": res.json()}), 200
+        return jsonify({"success": False, "message": f"Erreur {res.status_code}"}), 500
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+# ==========================================
+# 4. ROUTES D'INTELLIGENCE ARTIFICIELLE (PRÉDICTIF & GÉNÉRATIF)
+# ==========================================
 
 @app.route("/agent-analyze", methods=["POST"])
 def run_agent_analysis():
     try:
         data = request.get_json() or {}
-        agent = StaffingAutonomousAgent(data.get("planning_data", {}), meteo_sky=data.get("meteo", "Ensoleillé"))
-        return jsonify({"success": True, "rapport_agent": agent.analyser_et_decider()}), 200
+        planning_data = data.get("planning_data", {})
+        
+        agent = StaffingAutonomousAgent(planning_data)
+        rapport = agent.analyser_pdf_et_decider() 
+        return jsonify({"success": True, "rapport_agent": rapport}), 200
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route("/generer-planning", methods=["POST"])
+def api_generer_planning():
+    try:
+        data = request.get_json() or {}
+        budget_heures = int(data.get("budget_heures", 350))
+        
+        generateur = PlanningGenerator(budget_heures=budget_heures, contraintes={})
+        scenarios = generateur.generer_scenarios()
+        
+        return jsonify({"success": True, "scenarios": scenarios}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+# ==========================================
+# 5. ROUTES CRON (AUTONOMIE GOOGLE CHAT)
+# ==========================================
 
 @app.route("/cron/morning-briefing", methods=["GET", "POST"])
 def trigger_morning_briefing():
@@ -86,18 +146,10 @@ def trigger_real_time_monitor():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-@app.route("/generer-planning", methods=["POST"])
-def api_generer_planning():
-    try:
-        data = request.get_json() or {}
-        budget_heures = data.get("budget_heures", 350)
-        
-        generateur = PlanningGenerator(budget_heures=budget_heures, contraintes={})
-        scenarios = generateur.generer_scenarios()
-        
-        return jsonify({"success": True, "scenarios": scenarios}), 200
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
 
+# ==========================================
+# 6. DÉMARRAGE DU SERVEUR
+# ==========================================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
