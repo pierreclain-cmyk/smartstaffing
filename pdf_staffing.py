@@ -9,15 +9,15 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://eilyxfhxmscuwbavkpzz.supa
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7hGBQ_hMOZL9i7")
 
 REFERENTIEL_RH = {
-    "CEAGLIO Valerie": {"profil": "Sniper ID", "gain_id": 4.2, "rayon": "Caisse"},
-    "DIBOINE Simon": {"profil": "Sprinter VMA", "gain_id": 3.8, "rayon": "Caisse"},
-    "LIOTTA Clara": {"profil": "Expert Rush", "gain_id": 5.1, "rayon": "Caisse"},
-    "HAMAZ Tharkoya": {"profil": "Polyvalent", "gain_id": 2.8, "rayon": "Caisse"},
-    "BITOUN Clara": {"profil": "Polyvalent", "gain_id": 2.0, "rayon": "Accueil"},
-    "CLARION Fabienne": {"profil": "Renfort", "gain_id": 1.5, "rayon": "Caisse"},
-    "D'ORIA Christelle": {"profil": "Expert Vente", "gain_id": 0.0, "rayon": "Rayon"},
-    "RAOUX HUGO": {"profil": "Renfort VMA", "gain_id": 3.0, "rayon": "Caisse"},
-    "BRUN MYLENE": {"profil": "Renfort VMA", "gain_id": 2.5, "rayon": "Caisse"}
+    "CEAGLIO Valerie": {"profil": "Sniper ID", "gain_id": 4.2},
+    "DIBOINE Simon": {"profil": "Sprinter VMA", "gain_id": 3.8},
+    "LIOTTA Clara": {"profil": "Expert Rush", "gain_id": 5.1},
+    "HAMAZ Tharkoya": {"profil": "Polyvalent", "gain_id": 2.8},
+    "BITOUN Clara": {"profil": "Polyvalent", "gain_id": 2.0},
+    "CLARION Fabienne": {"profil": "Renfort", "gain_id": 1.5},
+    "D'ORIA Christelle": {"profil": "Expert Vente", "gain_id": 0.0},
+    "RAOUX HUGO": {"profil": "Renfort VMA", "gain_id": 3.0},
+    "BRUN MYLENE": {"profil": "Renfort VMA", "gain_id": 2.5}
 }
 
 def process_planning_pdf(file_b64, filename="planning.pdf"):
@@ -34,7 +34,7 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
     equipe_match = re.search(r"Nom Equipe:\s*(.*)", extracted_text)
     semaine_match = re.search(r"PLANNING\s+(?:REALISE|PREVISIONNEL)\s+S(\d+)", extracted_text)
 
-    nom_equipe = equipe_match.group(1).strip() if equipe_match else "Cashier Services"
+    nom_equipe = equipe_match.group(1).strip() if equipe_match else "Équipe Magasin"
     num_semaine = semaine_match.group(1) if semaine_match else "10"
     semaine_iso = f"2026-S{num_semaine.zfill(2)}"
 
@@ -59,50 +59,54 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
         if nom_trouve and len(nom_trouve) > 3:
             collaborateurs_trouves.add(nom_trouve)
             type_activite = "Repos / RH"
+            rayon_detecte = "Général"
             creneau_stricte = "00:00 - 00:00"
             
             for offset in range(1, 4):
                 if i + offset < len(lines):
                     sub = lines[i + offset]
-                    if "Vente" in sub: type_activite = "Vente"
-                    elif any(k in sub for k in ["Caisse", "Accueil", "QCO", "Demenagmt"]): type_activite = "Caisse"
                     
-                    # 🔥 Détection dynamique des heures exactes
+                    # 🔥 Détection intelligente des Rayons et Workshop
+                    if any(k in sub.upper() for k in ["WORKSHOP", "ATELIER", "REPARATION"]):
+                        type_activite = "Atelier"
+                        rayon_detecte = "Workshop"
+                    elif "CAISSE" in sub.upper() or "ACCUEIL" in sub.upper():
+                        type_activite = "Caisse"
+                        rayon_detecte = "Ligne de Caisse"
+                    elif "VENTE" in sub.upper() or "RAYON" in sub.upper():
+                        type_activite = "Vente"
+                        mots = sub.split()
+                        if len(mots) > 1 and mots[0].upper() == "VENTE":
+                            rayon_detecte = " ".join(mots[1:])
+                    
                     time_match = re.search(r"(\d{2}[:h]\d{2}).*?(\d{2}[:h]\d{2})", sub)
                     if time_match:
                         start = time_match.group(1).replace('h', ':')
                         end = time_match.group(2).replace('h', ':')
                         creneau_stricte = f"{start} - {end}"
 
-            profil_info = REFERENTIEL_RH.get(nom_trouve, {"profil": "Polyvalent", "gain_id": 1.5, "rayon": "Caisse"})
+            profil_info = REFERENTIEL_RH.get(nom_trouve, {"profil": "Polyvalent", "gain_id": 1.5})
             planning_realise.append({
                 "nom": nom_trouve,
                 "jour": current_day,
                 "creneau": creneau_stricte,
                 "activite": type_activite,
-                "rayon_cible": profil_info["rayon"] if type_activite == "Vente" else "Caisse",
+                "rayon_cible": rayon_detecte,
                 "profil": profil_info["profil"],
                 "status": "Planifié PDF" if type_activite != "Repos / RH" else "Repos",
-                "trafic_prevu": "180 pass/h" if type_activite == "Caisse" else "Trafic Rayon",
-                "gain_id": f"+{profil_info['gain_id']} % ID" if type_activite == "Caisse" else "Impact CA",
-                "action": "Conforme" if type_activite != "Repos / RH" else "Axe d'optimisation"
+                "action": "Conforme"
             })
 
-    # 🔥 CALCUL DYNAMIQUE DE LA COUVERTURE RUSH (15h - 18h)
-    staff_en_rush = 0
-    for p in planning_realise:
-        if p["status"] != "Repos" and "-" in p["creneau"]:
-            try:
-                debut = int(p["creneau"].split("-")[0].strip().split(":")[0])
-                fin = int(p["creneau"].split("-")[1].strip().split(":")[0])
-                if debut <= 15 and fin >= 17:  # Présent au cœur du rush
-                    staff_en_rush += 1
-            except:
-                pass
-            
-    # Objectif magasin arbitraire : 4 personnes (VMA + Accueil) pour un rush fluide
+    staff_en_rush = sum(1 for p in planning_realise if p["status"] != "Repos" and "-" in p["creneau"] and int(p["creneau"].split("-")[0].strip().split(":")[0]) <= 15 and int(p["creneau"].split("-")[1].strip().split(":")[0]) >= 17)
     couverture_calculee = min(100, int((staff_en_rush / 4) * 100)) if staff_en_rush > 0 else 45
-    sous_effectif_calc = max(0, 4 - staff_en_rush)
+
+    is_realise = "REALISE" in extracted_text.upper()
+    type_planning = "Réalisé (Échu)" if is_realise else "Prévisionnel"
+    
+    ecart_perf = None
+    if is_realise:
+        ecart = couverture_calculee - 100 # Comparaison fictive vs modèle
+        ecart_perf = f"{ecart} pts vs Prédiction IA"
 
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
     payload = {
@@ -111,50 +115,21 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
         "nom_equipe": nom_equipe,
         "equipiers_count": len(collaborateurs_trouves),
         "couverture_rush": couverture_calculee,
-        "sous_effectifs_count": sous_effectif_calc,
+        "sous_effectifs_count": max(0, 4 - staff_en_rush),
         "gain_id_estime": 6.1,
         "planning_json": planning_realise,
         "status_execution": "ARCHIVE"
     }
-    
-    try: 
-        requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload, headers=headers, timeout=5)
-    except: 
-        pass
-     # ... code existant ...
-    
-    # 🔥 DÉTECTION DU TYPE DE PLANNING (Debrief vs Futur)
-    is_realise = "REALISE" in extracted_text.upper()
-    type_planning = "Réalisé (Échu)" if is_realise else "Prévisionnel"
-    
-    # Simulation de l'écart de performance si le planning est échu
-    # L'IA compare la couverture réelle (ex: 88%) à ce qu'elle avait prédit à S-3 (ex: 95%)
-    ecart_perf = None
-    if is_realise:
-        prediction_s3 = 100 # Valeur théorique visée
-        ecart = couverture_calculee - prediction_s3
-        ecart_perf = f"{ecart} pts vs Prédiction IA"
+    try: requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload, headers=headers, timeout=5)
+    except: pass
 
     return {
         "equipe": nom_equipe,
-        "semaine": num_semaine,
         "semaine_iso": semaine_iso,
         "type_planning": type_planning,
         "ecart_perf": ecart_perf,
         "equipiersCount": len(collaborateurs_trouves),
         "couverture": couverture_calculee,
-        "sousEffectifs": sous_effectif_calc,
-        "gainTotalID": "+6.1 % ID Global",
-        "planning": planning_realise
-    }
-
-    return {
-        "equipe": nom_equipe,
-        "semaine": num_semaine,
-        "semaine_iso": semaine_iso,
-        "equipiersCount": len(collaborateurs_trouves),
-        "couverture": couverture_calculee,
-        "sousEffectifs": sous_effectif_calc,
-        "gainTotalID": "+6.1 % ID Global",
+        "sousEffectifs": max(0, 4 - staff_en_rush),
         "planning": planning_realise
     }
