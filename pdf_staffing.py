@@ -10,15 +10,8 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7
 
 JOURS_DEFAUT = ["Di 27", "Lu 28", "Ma 29", "Me 30", "Je 01", "Ve 02", "Sa 03"]
 
-def parse_pdf_cell(cell_text):
-    if not cell_text or not str(cell_text).strip():
-        return []
-    
-    txt = str(cell_text).strip()
-    
-    if re.search(r"\b(RH|REPOS)\b", txt.upper()) and not re.search(r"\d{1,2}[\.\:hH]\d{1,2}", txt):
-        return [{"type": "Repos", "creneau": "00:00 - 00:00", "info": "Repos"}]
-        
+def parse_time_string(txt):
+    """Extrait tous les créneaux horaires d'un texte (ex: 09.00-13.00, 14.00-19.30)."""
     clean = txt.replace(',', '.').replace('h', '.').replace('H', '.')
     clean = re.sub(r'(\d{1,2})\.\s+(\d{1,2})', r'\1.\2', clean)
     clean = re.sub(r'(\d{1,2}\.\d{1,2})\s*[-–—|àa]\s*(\d{1,2}\.\d{1,2})', r'\1-\2', clean)
@@ -31,10 +24,7 @@ def parse_pdf_cell(cell_text):
     for h1, m1, h2, m2 in matches:
         if len(m1) == 1: m1 += "0"
         if len(m2) == 1: m2 += "0"
-        
-        c = f"{h1.zfill(2)}:{m1.zfill(2)} - {h2.zfill(2)}:{m2.zfill(2)}"
-        results.append({"type": "Work", "creneau": c, "info": txt})
-        
+        results.append(f"{h1.zfill(2)}:{m1.zfill(2)} - {h2.zfill(2)}:{m2.zfill(2)}")
     return results
 
 def process_planning_pdf(file_b64):
@@ -58,88 +48,128 @@ def process_planning_pdf(file_b64):
 
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
-                text = page.extract_text() or ""
+                text_page = page.extract_text() or ""
 
-                semaine_match = re.search(r"\bS(\d{2})\b", text, re.IGNORECASE)
+                # 1. Semaine ISO
+                semaine_match = re.search(r"\bS(\d{2})\b", text_page, re.IGNORECASE)
                 if semaine_match:
                     semaine_iso = f"2026-S{semaine_match.group(1)}"
 
-                matches_jours = re.findall(r"\b(Di|Lu|Ma|Me|Je|Ve|Sa)\s*(\d{1,2})\b", text, re.IGNORECASE)
+                # 2. Reconstitution des 7 jours d'entête
+                matches_jours = re.findall(r"\b(Di|Lu|Ma|Me|Je|Ve|Sa)\s*(\d{1,2})\b", text_page, re.IGNORECASE)
                 if len(matches_jours) >= 7:
                     jours_detectes = [f"{j[0].capitalize()} {j[1]}" for j in matches_jours[:7]]
 
-                tables = page.extract_tables()
-                for table in tables:
-                    for row in table:
-                        if not row or len(row) < 4:
-                            continue
-                        
-                        nom_trouve = None
-                        for cell in row[:3]:
-                            if not cell: 
-                                continue
-                            cell_txt = str(cell).strip()
-                            matches = re.findall(r"([A-ZÀ-Ÿa-zà-ÿ]{2,}(?:[\s\-]+[A-ZÀ-Ÿa-zà-ÿ]{2,})+)", cell_txt)
-                            for candidate in matches:
-                                cand_clean = candidate.strip()
-                                cand_upper = cand_clean.upper()
-                                words = cand_upper.split()
-                                if not any(w in mots_exclus_noms for w in words) and not re.search(r"\d", cand_clean):
-                                    nom_trouve = cand_clean
-                                    break
-                            if nom_trouve:
+                # 3. Extraction par coordonnées X, Y (Word-Level Spatial Matching)
+                words = page.extract_words()
+                page_width = float(page.width)
+
+                # Définition des 7 zones verticales (Colonnes de jours X)
+                grid_left = page_width * 0.22
+                grid_right = page_width * 0.98
+                col_w = (grid_right - grid_left) / 7.0
+                
+                day_bounds = []
+                for idx in range(7):
+                    day_label = jours_detectes[idx] if idx < len(jours_detectes) else JOURS_DEFAUT[idx]
+                    day_bounds.append({
+                        "label": day_label,
+                        "x_min": grid_left + (idx * col_w),
+                        "x_max": grid_left + ((idx + 1) * col_w)
+                    })
+
+                # Regroupement des mots en lignes Y (tolérance ~4px)
+                lines_by_y = []
+                sorted_words = sorted(words, key=lambda w: (round(w['top'] / 4.0), w['x0']))
+                
+                current_line = []
+                current_top = None
+                for w in sorted_words:
+                    if current_top is None or abs(w['top'] - current_top) < 4:
+                        current_line.append(w)
+                        current_top = w['top']
+                    else:
+                        lines_by_y.append(current_line)
+                        current_line = [w]
+                        current_top = w['top']
+                if current_line:
+                    lines_by_y.append(current_line)
+
+                # Parcours de chaque ligne pour mapper Collaborateurs <-> Créneaux
+                current_nom = "Inconnu"
+
+                for line in lines_by_y:
+                    line_text = " ".join([w['text'] for w in line])
+                    
+                    # Recherche d'un nom sur la partie gauche de la page (X < grid_left)
+                    left_words = [w['text'] for w in line if w['x0'] < grid_left]
+                    left_str = " ".join(left_words)
+                    
+                    nom_match = re.search(r"([A-ZÀ-Ÿa-zà-ÿ]{2,}(?:[\s\-]+[A-ZÀ-Ÿa-zà-ÿ]{2,})+)", left_str)
+                    if nom_match:
+                        candidate = nom_match.group(1).strip()
+                        cand_upper = candidate.upper()
+                        if not any(k in cand_upper for k in mots_exclus_noms) and not re.search(r"\d", candidate):
+                            current_nom = candidate
+                            collaborateurs.add(current_nom)
+
+                    if current_nom == "Inconnu":
+                        continue
+
+                    # Inspection des mots situés dans la zone planning (X >= grid_left)
+                    right_words = [w for w in line if w['x0'] >= grid_left - 10]
+                    
+                    for w in right_words:
+                        w_txt = w['text'].strip()
+                        x_pos = w['x0']
+
+                        # Trouver la colonne de jour correspondante
+                        matched_day = None
+                        for db in day_bounds:
+                            if db['x_min'] <= x_pos < db['x_max']:
+                                matched_day = db['label']
                                 break
 
-                        if not nom_trouve:
+                        if not matched_day:
                             continue
 
-                        collaborateurs.add(nom_trouve)
-                        day_cells = row[-7:] if len(row) >= 7 else row
+                        # Cas 1 : Journée de repos
+                        if re.search(r"\b(RH|REPOS)\b", w_txt.upper()):
+                            unique_key = f"{current_nom}_{matched_day}_REPOS"
+                            if unique_key not in seen_entries:
+                                seen_entries.add(unique_key)
+                                planning_realise.append({
+                                    "nom": current_nom,
+                                    "jour": matched_day,
+                                    "creneau": "00:00 - 00:00",
+                                    "activite": "Repos",
+                                    "rayon_cible": "Ligne de Caisse",
+                                    "profil": "Hôte / Hôtesse Caisse",
+                                    "status": "Repos"
+                                })
 
-                        for day_idx, cell in enumerate(day_cells):
-                            if day_idx >= len(jours_detectes):
-                                break
-                            
-                            jour_libelle = jours_detectes[day_idx]
-                            parsed_items = parse_pdf_cell(cell)
+                        # Cas 2 : Créneau horaire
+                        creneaux_detectes = parse_time_string(w_txt)
+                        for creneau in creneaux_detectes:
+                            try:
+                                start_h = int(creneau.split(":")[0])
+                                end_h = int(creneau.split("-")[1].strip().split(":")[0])
+                                if start_h <= 15 and end_h >= 17:
+                                    staff_en_rush += 1
+                            except: pass
 
-                            for item in parsed_items:
-                                if item['type'] == 'Repos':
-                                    unique_key = f"{nom_trouve}_{jour_libelle}_REPOS"
-                                    if unique_key not in seen_entries:
-                                        seen_entries.add(unique_key)
-                                        planning_realise.append({
-                                            "nom": nom_trouve,
-                                            "jour": jour_libelle,
-                                            "creneau": "00:00 - 00:00",
-                                            "activite": "Repos",
-                                            "rayon_cible": "Ligne de Caisse",
-                                            "profil": "Hôte / Hôtesse Caisse",
-                                            "status": "Repos"
-                                        })
-
-                                elif item['type'] == 'Work':
-                                    creneau = item['creneau']
-                                    
-                                    try:
-                                        start_h = int(creneau.split(":")[0])
-                                        end_h = int(creneau.split("-")[1].strip().split(":")[0])
-                                        if start_h <= 15 and end_h >= 17:
-                                            staff_en_rush += 1
-                                    except: pass
-
-                                    unique_key = f"{nom_trouve}_{jour_libelle}_{creneau}"
-                                    if unique_key not in seen_entries:
-                                        seen_entries.add(unique_key)
-                                        planning_realise.append({
-                                            "nom": nom_trouve,
-                                            "jour": jour_libelle,
-                                            "creneau": creneau,
-                                            "activite": "Tenue de Caisse",
-                                            "rayon_cible": "Ligne de Caisse",
-                                            "profil": "Hôte / Hôtesse Caisse",
-                                            "status": "Planifié Caisse"
-                                        })
+                            unique_key = f"{current_nom}_{matched_day}_{creneau}"
+                            if unique_key not in seen_entries:
+                                seen_entries.add(unique_key)
+                                planning_realise.append({
+                                    "nom": current_nom,
+                                    "jour": matched_day,
+                                    "creneau": creneau,
+                                    "activite": "Tenue de Caisse",
+                                    "rayon_cible": "Ligne de Caisse",
+                                    "profil": "Hôte / Hôtesse Caisse",
+                                    "status": "Planifié Caisse"
+                                })
 
         couverture_calculee = min(100, int((staff_en_rush / 4) * 100)) if staff_en_rush > 0 else 45
         sous_effectif_calc = max(0, 4 - staff_en_rush)
@@ -156,10 +186,13 @@ def process_planning_pdf(file_b64):
             "status_execution": "ARCHIVE"
         }
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
+        
         try:
-            requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload_db, headers=headers, timeout=5)
+            res_db = requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload_db, headers=headers, timeout=5)
+            if res_db.status_code not in (200, 201):
+                print(f"⚠️ ERREUR SUPABASE ({res_db.status_code}): {res_db.text}")
         except Exception as e_db:
-            print(f"Erreur Supabase: {e_db}")
+            print(f"Erreur réseau Supabase: {e_db}")
 
         return {
             "equipe": "Équipe Caisse",
