@@ -54,7 +54,17 @@ def inject_commerce():
         semaine_iso = data.get("semaine_iso", "2026-S10")
         
         file_bytes = base64.b64decode(data.get("file_data"))
-        df = pd.read_csv(io.BytesIO(file_bytes), sep=";|,", engine="python")
+        
+        # 🔥 FIX : Lecture robuste (ignore les lignes de pied de page cassées)
+        try:
+            # Essai avec le séparateur point-virgule (standard français)
+            df = pd.read_csv(io.BytesIO(file_bytes), sep=";", on_bad_lines="skip")
+            if len(df.columns) < 2:
+                # Fallback sur la virgule si ce n'est pas un CSV français
+                file_bytes = base64.b64decode(data.get("file_data"))
+                df = pd.read_csv(io.BytesIO(file_bytes), sep=",", on_bad_lines="skip")
+        except Exception as e:
+            return jsonify({"success": False, "message": f"Erreur de lecture du tableau CSV: {str(e)}"}), 400
         
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
         payload = {
@@ -62,7 +72,6 @@ def inject_commerce():
             "semaine_iso": semaine_iso,
             "donnees_financieres": df.to_dict(orient="records")
         }
-        # Note: Assure-toi d'avoir créé la table historique_ca_rayons dans Supabase
         requests.post(f"{SUPABASE_URL}/rest/v1/historique_ca_rayons", json=payload, headers=headers, timeout=5)
 
         return jsonify({"success": True, "message": f"CA injecté pour {rayon}"}), 200
