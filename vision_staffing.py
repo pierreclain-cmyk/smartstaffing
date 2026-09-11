@@ -10,6 +10,35 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7
 
 JOURS_DEFAUT = ["Di 27", "Lu 28", "Ma 29", "Me 30", "Je 01", "Ve 02", "Sa 03"]
 
+def parse_horoquartz_cell(cell_text):
+    if not cell_text or not cell_text.strip():
+        return []
+    
+    txt = cell_text.strip()
+    
+    # Détection des repos
+    if re.search(r"\b(RH|REPOS)\b", txt.upper()) and not re.search(r"\d{1,2}[\.\:hH]\d{1,2}", txt):
+        return [{"type": "Repos", "creneau": "00:00 - 00:00", "info": "Repos"}]
+        
+    # Normalisation de la chaîne horaire (ex: 19. 30 -> 19.30, 19.3 -> 19.30, 19h30 -> 19.30)
+    clean = txt.replace(',', '.').replace('h', '.').replace('H', '.')
+    clean = re.sub(r'(\d{1,2})\.\s+(\d{1,2})', r'\1.\2', clean)
+    clean = re.sub(r'(\d{1,2}\.\d{1,2})\s*[-–—|àa]\s*(\d{1,2}\.\d{1,2})', r'\1-\2', clean)
+    clean = re.sub(r'(\d{1,2}\.\d{1,2})\s*[-–—|àa]\s*(\d{1,2})(?!\d|\.)', r'\1-\2.00', clean)
+    
+    pattern = r"(\d{1,2})\.(\d{1,2})\s*[-–—|àa]\s*(\d{1,2})\.(\d{1,2})"
+    matches = re.findall(pattern, clean)
+    
+    results = []
+    for h1, m1, h2, m2 in matches:
+        if len(m1) == 1: m1 = m1 + "0"
+        if len(m2) == 1: m2 = m2 + "0"
+        
+        c = f"{h1.zfill(2)}:{m1.zfill(2)} - {h2.zfill(2)}:{m2.zfill(2)}"
+        results.append({"type": "Work", "creneau": c, "info": txt})
+        
+    return results
+
 def process_planning_image(file_b64):
     try:
         image_bytes = base64.b64decode(file_b64)
@@ -29,7 +58,6 @@ def process_planning_image(file_b64):
         }
         
         res = requests.post('https://api.ocr.space/parse/image', data=payload, timeout=25)
-        
         if res.status_code != 200:
             raise Exception(f"Erreur API OCR Space (HTTP {res.status_code})")
             
@@ -43,14 +71,12 @@ def process_planning_image(file_b64):
             raise Exception("Aucun résultat renvoyé par l'OCR.")
             
         extracted_text = parsed_results[0].get('ParsedText', '')
-        if not extracted_text.strip():
-            raise Exception("Aucun texte détecté dans l'image.")
 
-        # 1. Extraction de la semaine ISO
+        # 1. Extraction de la Semaine ISO
         semaine_match = re.search(r"\bS(\d{2})\b", extracted_text, re.IGNORECASE)
         semaine_iso = f"2026-S{semaine_match.group(1)}" if semaine_match else "2026-S40"
 
-        # 2. Détection des 7 jours d'entête
+        # 2. Entête des jours
         matches_jours = re.findall(r"\b(Di|Lu|Ma|Me|Je|Ve|Sa)\s*(\d{1,2})\b", extracted_text, re.IGNORECASE)
         if len(matches_jours) >= 7:
             jours_detectes = [f"{j[0].capitalize()} {j[1]}" for j in matches_jours[:7]]
@@ -77,23 +103,31 @@ def process_planning_image(file_b64):
             if not line.strip():
                 continue
 
-            # Découpage par cellule (conservant les cellules vides)
             cells = line.split('\t')
             
-            # Recherche du nom dans les 3 premières colonnes
+            # Recherche du nom (tolère DE JESUS YSILDA, BEAL Eric, etc.)
+            nom_trouve = None
             for cell in cells[:3]:
-                nom_match = re.search(r"([A-ZÀ-Ÿ]{2,}[\s\-]+[A-ZÀ-Ÿa-zà-ÿ]{2,}(?:[\s\-]+[A-ZÀ-Ÿa-zà-ÿ]{2,})?)", cell)
-                if nom_match:
-                    candidate = nom_match.group(1).strip()
-                    if not any(k in candidate.upper() for k in mots_exclus_noms) and not re.search(r"\d", candidate):
-                        nom_courant = candidate
-                        collaborateurs.add(nom_courant)
+                cell_txt = cell.strip()
+                matches = re.findall(r"([A-ZÀ-Ÿa-zà-ÿ]{2,}(?:[\s\-]+[A-ZÀ-Ÿa-zà-ÿ]{2,})+)", cell_txt)
+                for candidate in matches:
+                    cand_clean = candidate.strip()
+                    cand_upper = cand_clean.upper()
+                    words = cand_upper.split()
+                    if not any(w in mots_exclus_noms for w in words) and not re.search(r"\d", cand_clean):
+                        nom_trouve = cand_clean
                         break
+                if nom_trouve:
+                    break
+
+            if nom_trouve:
+                nom_courant = nom_trouve
+                collaborateurs.add(nom_courant)
 
             if nom_courant == "Inconnu":
                 continue
 
-            # Les 7 dernières colonnes correspondent aux 7 jours
+            # Alignement strict sur les 7 colonnes de la semaine
             day_cells = cells[-7:] if len(cells) >= 7 else cells
 
             for day_idx, cell in enumerate(day_cells):
@@ -101,52 +135,44 @@ def process_planning_image(file_b64):
                     break
                 
                 jour_libelle = jours_detectes[day_idx]
-                cell_clean = cell.strip()
-                if not cell_clean:
-                    continue
+                parsed_items = parse_horoquartz_cell(cell)
 
-                time_matches = re.findall(r"(\d{1,2})[\.\:hH](\d{2})\s*[-|à|a]?\s*(\d{1,2})[\.\:hH](\d{2})", cell_clean)
-                is_repos = bool(re.search(r"\b(RH|REPOS)\b", cell_clean.upper())) and not time_matches
+                for item in parsed_items:
+                    if item['type'] == 'Repos':
+                        unique_key = f"{nom_courant}_{jour_libelle}_REPOS"
+                        if unique_key not in seen_entries:
+                            seen_entries.add(unique_key)
+                            planning_realise.append({
+                                "nom": nom_courant,
+                                "jour": jour_libelle,
+                                "creneau": "00:00 - 00:00",
+                                "activite": "Repos",
+                                "rayon_cible": "Aucun",
+                                "profil": "En apprentissage ML",
+                                "status": "Repos"
+                            })
 
-                if is_repos:
-                    unique_key = f"{nom_courant}_{jour_libelle}_REPOS"
-                    if unique_key not in seen_entries:
-                        seen_entries.add(unique_key)
-                        planning_realise.append({
-                            "nom": nom_courant,
-                            "jour": jour_libelle,
-                            "creneau": "00:00 - 00:00",
-                            "activite": "Repos",
-                            "rayon_cible": "Aucun",
-                            "profil": "En apprentissage ML",
-                            "status": "Repos"
-                        })
-
-                elif time_matches:
-                    for tm in time_matches:
-                        h_start, m_start, h_end, m_end = tm
-                        creneau = f"{h_start.zfill(2)}:{m_start} - {h_end.zfill(2)}:{m_end}"
-                        infos_supp = cell_clean.upper()
+                    elif item['type'] == 'Work':
+                        creneau = item['creneau']
+                        infos_supp = item['info'].upper()
 
                         rayon_detecte = "Général"
                         activite = "Vente"
-                        if "WELLNES" in infos_supp or "FITNESS" in infos_supp: 
-                            rayon_detecte = "Fitness"
-                        elif "CYCLE" in infos_supp or "MONT" in infos_supp: 
-                            rayon_detecte = "Cycle / Montagne"
-                        elif "WORKSHOP" in infos_supp or "ATELIER" in infos_supp: 
-                            rayon_detecte = "Workshop"
-                        elif "CAISSE" in infos_supp or "ACCUEIL" in infos_supp: 
-                            rayon_detecte = "Ligne de Caisse"
+                        if "WELLNES" in infos_supp or "FITNESS" in infos_supp: rayon_detecte = "Fitness"
+                        elif "CYCLE" in infos_supp or "MONT" in infos_supp: rayon_detecte = "Cycle / Montagne"
+                        elif "WORKSHOP" in infos_supp or "ATELIER" in infos_supp: rayon_detecte = "Workshop"
+                        elif "CAISSE" in infos_supp or "ACCUEIL" in infos_supp: rayon_detecte = "Ligne de Caisse"
                         elif "ECOLE" in infos_supp or "FORMATION" in infos_supp: 
                             activite = "Formation"
                             rayon_detecte = "École Magasin"
 
+                        # Décompte du rush (15h-17h)
                         try:
-                            if int(h_start) <= 15 and int(h_end) >= 17:
+                            start_h = int(creneau.split(":")[0])
+                            end_h = int(creneau.split("-")[1].strip().split(":")[0])
+                            if start_h <= 15 and end_h >= 17:
                                 staff_en_rush += 1
-                        except:
-                            pass
+                        except: pass
 
                         unique_key = f"{nom_courant}_{jour_libelle}_{creneau}"
                         if unique_key not in seen_entries:
