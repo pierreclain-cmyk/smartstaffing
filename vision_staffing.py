@@ -33,17 +33,18 @@ def process_planning_image(file_b64):
         
     extracted_text = res.json()['ParsedResults'][0]['ParsedText']
     
-    # Extraction de la semaine ISO
+    # 1. Extraction de la semaine ISO (ex: S40)
     semaine_match = re.search(r"\bS(\d{2})\b", extracted_text, re.IGNORECASE)
     semaine_iso = f"2026-S{semaine_match.group(1)}" if semaine_match else "2026-S40"
 
-    # Reconstitution des 7 jours d'entête
+    # 2. Reconstitution de l'entête des jours (ex: Di 27, Lu 28...)
     matches_jours = re.findall(r"\b(Di|Lu|Ma|Me|Je|Ve|Sa)\s*(\d{1,2})\b", extracted_text, re.IGNORECASE)
     if len(matches_jours) >= 7:
         jours_detectes = [f"{j[0].capitalize()} {j[1]}" for j in matches_jours[:7]]
     else:
         jours_detectes = JOURS_DEFAUT
 
+    # On sépare les lignes, mais on NE SUPPRIME PAS les tabulations internes pour garder l'alignement
     lines = [line.strip() for line in extracted_text.split("\n") if line.strip()]
     
     planning_realise = []
@@ -61,15 +62,17 @@ def process_planning_image(file_b64):
     nom_courant = "Inconnu"
 
     for line in lines:
-        # Séparation par cellule grâce aux tabulations du mode Tableau OCR
-        cells = [c.strip() for c in line.split('\t') if c.strip()]
-        if not cells:
-            cells = [line]
+        # On découpe par cellule (tabulation). Les cellules vides sont CONSERVÉES ('')
+        cells = [c.strip() for c in line.split('\t')]
+        
+        if len(cells) < 4:
+            continue
 
-        # 1. Recherche d'un nom de collaborateur dans la ligne
+        # 3. Recherche du nom dans les 3 premières colonnes (Nom, Cible, Hrs)
         nom_trouve = None
-        for cell in cells:
-            nom_match = re.search(r"([A-ZÀ-Ÿ]{3,}[\s\-]+[A-ZÀ-Ÿa-zà-ÿ]{3,})", cell)
+        for cell in cells[:3]:
+            # Tolérance sur les noms composés : "DE JESUS YSILDA", "RAYMOND Criss"
+            nom_match = re.search(r"([A-ZÀ-Ÿ]{2,}[\s\-]+[A-ZÀ-Ÿa-zà-ÿ]{2,}(?:[\s\-]+[A-ZÀ-Ÿa-zà-ÿ]{2,})?)", cell)
             if nom_match:
                 candidate = nom_match.group(1).strip()
                 if not any(k in candidate.upper() for k in mots_exclus_noms) and not re.search(r"\d", candidate):
@@ -80,40 +83,35 @@ def process_planning_image(file_b64):
             nom_courant = nom_trouve
             collaborateurs.add(nom_courant)
 
-        # 2. Analyse des cellules horaires/repos
-        # On ne traite que si un nom est déjà identifié
         if nom_courant == "Inconnu":
             continue
 
-        # Extraction de tous les créneaux ou mentions RH dans la ligne
-        day_cell_idx = 0
-        for cell in cells:
-            # Recherche d'horaires dans la cellule
-            time_matches = re.findall(r"(\d{1,2})[\.\:hH](\d{2})\s*[-|à|a]\s*(\d{1,2})[\.\:hH](\d{2})(.*)", cell)
+        # 4. Alignement par la droite : les 7 derniers éléments correspondent toujours aux 7 jours de la semaine
+        day_cells = cells[-7:] if len(cells) >= 7 else cells
+        
+        for day_idx, cell in enumerate(day_cells):
+            if day_idx >= 7: break
+            
+            jour_libelle = jours_detectes[day_idx]
+            
+            # Recherche de créneaux avec une regex qui s'arrête proprement avant le créneau suivant
+            time_matches = re.findall(r"(\d{1,2})[\.\:hH](\d{2})\s*[-|à|a]\s*(\d{1,2})[\.\:hH](\d{2})([A-Za-z\s\-\(\)]*)", cell)
             is_repos = bool(re.search(r"\b(RH|REPOS)\b", cell.upper())) and not time_matches
 
             if is_repos:
-                jour_libelle = jours_detectes[day_cell_idx % len(jours_detectes)]
                 unique_key = f"{nom_courant}_{jour_libelle}_REPOS"
                 if unique_key not in seen_entries:
                     seen_entries.add(unique_key)
                     planning_realise.append({
-                        "nom": nom_courant,
-                        "jour": jour_libelle,
-                        "creneau": "00:00 - 00:00",
-                        "activite": "Repos",
-                        "rayon_cible": "Aucun",
-                        "profil": "En apprentissage ML",
-                        "status": "Repos"
+                        "nom": nom_courant, "jour": jour_libelle, "creneau": "00:00 - 00:00",
+                        "activite": "Repos", "rayon_cible": "Aucun", "profil": "En apprentissage ML", "status": "Repos"
                     })
-                day_cell_idx += 1
 
             elif time_matches:
-                jour_libelle = jours_detectes[day_cell_idx % len(jours_detectes)]
                 for tm in time_matches:
                     h_start, m_start, h_end, m_end, rest = tm
                     creneau = f"{h_start.zfill(2)}:{m_start} - {h_end.zfill(2)}:{m_end}"
-                    infos_supp = rest.upper() if rest else "GENERAL"
+                    infos_supp = rest.upper() if rest else cell.upper() # Fallback sur la cellule entière
 
                     rayon_detecte = "Général"
                     activite = "Vente"
@@ -131,20 +129,13 @@ def process_planning_image(file_b64):
                     if unique_key not in seen_entries:
                         seen_entries.add(unique_key)
                         planning_realise.append({
-                            "nom": nom_courant,
-                            "jour": jour_libelle,
-                            "creneau": creneau,
-                            "activite": activite,
-                            "rayon_cible": rayon_detecte,
-                            "profil": "En apprentissage ML",
-                            "status": "Planifié OCR"
+                            "nom": nom_courant, "jour": jour_libelle, "creneau": creneau,
+                            "activite": activite, "rayon_cible": rayon_detecte, "profil": "En apprentissage ML", "status": "Planifié OCR"
                         })
-                day_cell_idx += 1
 
     couverture_calculee = min(100, int((staff_en_rush / 4) * 100)) if staff_en_rush > 0 else 45
     sous_effectif_calc = max(0, 4 - staff_en_rush)
 
-    # Export Supabase
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
     payload_db = {
         "nom_fichier": "capture_horoquartz.png",
@@ -158,12 +149,8 @@ def process_planning_image(file_b64):
         "status_execution": "ARCHIVE"
     }
     
-    try: 
-        res_db = requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload_db, headers=headers, timeout=5)
-        if res_db.status_code not in (200, 201):
-            print(f"Erreur Supabase ({res_db.status_code}): {res_db.text}")
-    except Exception as e: 
-        print(f"Erreur réseau Supabase : {str(e)}")
+    try: requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload_db, headers=headers, timeout=5)
+    except: pass
 
     return {
         "equipe": "Équipe Magasin",
