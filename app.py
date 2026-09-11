@@ -46,50 +46,58 @@ def inject_commerce():
     try:
         data = request.get_json() or {}
         rayon = data.get("rayon", "Général")
-        semaine_iso = data.get("semaine_iso", "2026-S10")
+        semaine_iso = data.get("semaine_iso", "2026-W10")
         raw_b64 = data.get("file_data", "")
 
         if not raw_b64:
-            return jsonify({"success": False, "message": "Fichier CSV absent"}), 400
+            return jsonify({"success": False, "message": "Fichier CSV absent."}), 400
 
-        # Nettoyage du préfixe base64 si présent (ex: data:text/csv;base64,...)
         if "," in raw_b64:
             raw_b64 = raw_b64.split(",")[1]
 
         file_bytes = base64.b64decode(raw_b64)
 
-        # Lecture du CSV (gestion des séparateurs ; et ,)
+        # Lecture du CSV avec gestion des séparateurs ; et ,
         try:
-            df = pd.read_csv(io.BytesIO(file_bytes), sep=";", on_bad_lines="skip")
+            df = pd.read_csv(io.BytesIO(file_bytes), sep=",", on_bad_lines="skip")
             if len(df.columns) < 2:
-                df = pd.read_csv(io.BytesIO(file_bytes), sep=",", on_bad_lines="skip")
+                df = pd.read_csv(io.BytesIO(file_bytes), sep=";", on_bad_lines="skip")
         except Exception as e:
             return jsonify({"success": False, "message": f"Erreur lecture CSV : {str(e)}"}), 400
 
         df = df.fillna("")
-        
-        # Préparation de l'envoi vers Supabase
+        df.columns = df.columns.str.strip().str.replace('"', '').str.replace("'", "")
+
         clean_url = SUPABASE_URL.rstrip('/')
-        endpoint = f"{clean_url}/rest/v1/historique_ca_rayons"
         headers = {
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
             "Content-Type": "application/json",
             "Prefer": "return=minimal"
         }
-        
-        payload = {
-            "rayon": rayon,
-            "semaine_iso": semaine_iso,
-            "donnees_financieres": df.to_dict(orient="records")
-        }
 
-        res = requests.post(endpoint, json=payload, headers=headers, timeout=10)
+        # Orientation automatique selon le type de fichier CSV
+        if "volume_affaires_instore" in df.columns or "trafic_instore" in df.columns:
+            # CSV de performance hebdomadaire globale
+            records = df.to_dict(orient="records")
+            endpoint = f"{clean_url}/rest/v1/performance_magasin_hebdo"
+            res = requests.post(endpoint, json=records, headers=headers, timeout=10)
+            table_cible = "performance_magasin_hebdo"
+        else:
+            # CSV spécifique à un rayon
+            endpoint = f"{clean_url}/rest/v1/historique_ca_rayons"
+            payload = {
+                "rayon": rayon,
+                "semaine_iso": semaine_iso,
+                "donnees_financieres": df.to_dict(orient="records")
+            }
+            res = requests.post(endpoint, json=payload, headers=headers, timeout=10)
+            table_cible = "historique_ca_rayons"
 
         if res.status_code in (200, 201):
-            return jsonify({"success": True, "message": f"CA injecté avec succès pour le rayon {rayon}"}), 200
+            return jsonify({"success": True, "message": f"✅ {len(df)} lignes injectées dans Supabase ({table_cible})"}), 200
         else:
-            print(f"⚠️ ERREUR SUPABASE CA ({res.status_code}) : {res.text}")
+            print(f"⚠️ ERREUR SUPABASE COMMERCE ({res.status_code}) : {res.text}")
             return jsonify({"success": False, "message": f"Erreur Supabase ({res.status_code}) : {res.text}"}), 500
 
     except Exception as e:
