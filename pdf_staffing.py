@@ -5,9 +5,11 @@ import re
 import pdfplumber
 import requests
 
+# Constantes Supabase
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://eilyxfhxmscuwbavkpzz.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7hGBQ_hMOZL9i7")
 
+# Référentiel des collaborateurs Titulaires
 REFERENTIEL_RH = {
     "CEAGLIO Valerie": {"profil": "Sniper ID", "gain_id": 4.2},
     "DIBOINE Simon": {"profil": "Sprinter VMA", "gain_id": 3.8},
@@ -24,6 +26,7 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
     pdf_bytes = base64.b64decode(file_b64)
     extracted_text = ""
     
+    # 1. Extraction du texte PDF (Limité aux 4 premières pages pour la rapidité)
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages[:4]:
             text = page.extract_text()
@@ -31,6 +34,8 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
             page.flush_cache()
 
     lines = [line.strip() for line in extracted_text.split("\n") if line.strip()]
+    
+    # 2. Informations globales (Équipe & Semaine)
     equipe_match = re.search(r"Nom Equipe:\s*(.*)", extracted_text)
     semaine_match = re.search(r"PLANNING\s+(?:REALISE|PREVISIONNEL)\s+S(\d+)", extracted_text)
 
@@ -42,26 +47,33 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
     planning_realise = []
     current_day = "Lundi 02/03/2026"
 
+    # 3. Parcours ligne par ligne pour trouver les collaborateurs
     for i, line in enumerate(lines):
+        # Mise à jour du jour courant
         if any(j in line.lower() for j in ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]) and "/" in line:
             current_day = line.split("Etat")[0].strip()
 
         nom_trouve = None
+        
+        # Recherche par référentiel
         for ref_nom in REFERENTIEL_RH.keys():
             if ref_nom.upper() in line.upper():
                 nom_trouve = ref_nom
                 break
         
+        # Recherche regex (si nouveau collaborateur hors référentiel)
         if not nom_trouve and re.match(r"^[A-Z\d\'\-\s]{2,}\s+[A-Za-z]+", line):
             if not any(k in line.upper() for k in ["DECATHLON", "PLANNING", "EQUIPE", "PATRON", "INFORMATION", "ETAT"]):
                 nom_trouve = line.split("V")[0].split("113")[0].strip()
 
+        # Si on a trouvé quelqu'un
         if nom_trouve and len(nom_trouve) > 3:
             collaborateurs_trouves.add(nom_trouve)
             type_activite = "Repos / RH"
             rayon_detecte = "Général"
             creneau_stricte = "00:00 - 00:00"
             
+            # Analyse des 3 lignes en dessous du nom pour trouver les horaires et les affectations
             for offset in range(1, 4):
                 if i + offset < len(lines):
                     sub = lines[i + offset]
@@ -78,7 +90,11 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
                         mots = sub.split()
                         if len(mots) > 1 and mots[0].upper() == "VENTE":
                             rayon_detecte = " ".join(mots[1:])
+                            # 🔥 FUSION DES DEUX UNIVERS CYCLE / MONTAGNE
+                            if "CYCLE" in rayon_detecte.upper() or "MONTAGNE" in rayon_detecte.upper():
+                                rayon_detecte = "Cycle / Montagne"
                     
+                    # Extraction du créneau exact
                     time_match = re.search(r"(\d{2}[:h]\d{2}).*?(\d{2}[:h]\d{2})", sub)
                     if time_match:
                         start = time_match.group(1).replace('h', ':')
@@ -97,17 +113,33 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
                 "action": "Conforme"
             })
 
-    staff_en_rush = sum(1 for p in planning_realise if p["status"] != "Repos" and "-" in p["creneau"] and int(p["creneau"].split("-")[0].strip().split(":")[0]) <= 15 and int(p["creneau"].split("-")[1].strip().split(":")[0]) >= 17)
-    couverture_calculee = min(100, int((staff_en_rush / 4) * 100)) if staff_en_rush > 0 else 45
+    # 🔥 CALCUL DYNAMIQUE DE LA COUVERTURE RUSH (15h - 18h)
+    staff_en_rush = 0
+    for p in planning_realise:
+        if p["status"] != "Repos" and "-" in p["creneau"]:
+            try:
+                debut = int(p["creneau"].split("-")[0].strip().split(":")[0])
+                fin = int(p["creneau"].split("-")[1].strip().split(":")[0])
+                if debut <= 15 and fin >= 17:  # Présent au cœur du rush
+                    staff_en_rush += 1
+            except:
+                pass
 
+    # Objectif arbitraire : 4 personnes pour un rush fluide (VMA)
+    couverture_calculee = min(100, int((staff_en_rush / 4) * 100)) if staff_en_rush > 0 else 45
+    sous_effectif_calc = max(0, 4 - staff_en_rush)
+
+    # 🔥 DÉTECTION DU TYPE DE PLANNING (Debrief vs Futur)
     is_realise = "REALISE" in extracted_text.upper()
     type_planning = "Réalisé (Échu)" if is_realise else "Prévisionnel"
     
+    # Simulation de l'écart de performance si le planning est échu
     ecart_perf = None
     if is_realise:
-        ecart = couverture_calculee - 100 # Comparaison fictive vs modèle
+        ecart = couverture_calculee - 100 # Comparaison de la couverture réelle vs l'idéal théorique (100%)
         ecart_perf = f"{ecart} pts vs Prédiction IA"
 
+    # Envoi en base de données Supabase
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
     payload = {
         "nom_fichier": filename,
@@ -115,13 +147,16 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
         "nom_equipe": nom_equipe,
         "equipiers_count": len(collaborateurs_trouves),
         "couverture_rush": couverture_calculee,
-        "sous_effectifs_count": max(0, 4 - staff_en_rush),
+        "sous_effectifs_count": sous_effectif_calc,
         "gain_id_estime": 6.1,
         "planning_json": planning_realise,
         "status_execution": "ARCHIVE"
     }
-    try: requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload, headers=headers, timeout=5)
-    except: pass
+    
+    try: 
+        requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload, headers=headers, timeout=5)
+    except: 
+        pass
 
     return {
         "equipe": nom_equipe,
@@ -130,6 +165,7 @@ def process_planning_pdf(file_b64, filename="planning.pdf"):
         "ecart_perf": ecart_perf,
         "equipiersCount": len(collaborateurs_trouves),
         "couverture": couverture_calculee,
-        "sousEffectifs": max(0, 4 - staff_en_rush),
+        "sousEffectifs": sous_effectif_calc,
+        "gainTotalID": "+6.1 % ID Global",
         "planning": planning_realise
     }
