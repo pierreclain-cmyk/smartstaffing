@@ -44,5 +44,9 @@ class PlanningGenerator:
                     activite, creneau = "Tâche Allégée", "09:00 - 14:00"
             elif strategie == "perf" and profil["profil"] in ["Expert Rush", "Sniper ID", "Sprinter VMA"]:
                 creneau = "13:00 - 19:30"
-            planning.append({"nom": nom, "jour": self.jour_cible, "profil": profil["profil"], "activite": activite, "creneau": creneau, "fatigue_init": profil["fatigue"], "rayon": self.rayon_cible})
+            planning.append({
+                "nom": nom, "jour": self.jour_cible, "profil": profil["profil"], 
+                "activite": activite, "creneau": creneau, "fatigue_init": profil["fatigue"], 
+                "rayon": self.rayon_cible
+            })
         return planning
