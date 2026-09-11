@@ -55,24 +55,28 @@ def inject_commerce():
         
         file_bytes = base64.b64decode(data.get("file_data"))
         
-        # 🔥 FIX : Lecture robuste (ignore les lignes de pied de page cassées)
         try:
-            # Essai avec le séparateur point-virgule (standard français)
             df = pd.read_csv(io.BytesIO(file_bytes), sep=";", on_bad_lines="skip")
             if len(df.columns) < 2:
-                # Fallback sur la virgule si ce n'est pas un CSV français
                 file_bytes = base64.b64decode(data.get("file_data"))
                 df = pd.read_csv(io.BytesIO(file_bytes), sep=",", on_bad_lines="skip")
         except Exception as e:
             return jsonify({"success": False, "message": f"Erreur de lecture du tableau CSV: {str(e)}"}), 400
         
+        # 🔥 FIX : Remplacer les NaN par des valeurs compatibles JSON (None/null)
+        df = df.where(pd.notnull(df), None)
+
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
         payload = {
             "rayon": rayon,
             "semaine_iso": semaine_iso,
             "donnees_financieres": df.to_dict(orient="records")
         }
-        requests.post(f"{SUPABASE_URL}/rest/v1/historique_ca_rayons", json=payload, headers=headers, timeout=5)
+        
+        # On vérifie la réponse de Supabase
+        res = requests.post(f"{SUPABASE_URL}/rest/v1/historique_ca_rayons", json=payload, headers=headers, timeout=5)
+        if res.status_code not in [200, 201]:
+            return jsonify({"success": False, "message": f"Erreur Supabase: {res.text}"}), 500
 
         return jsonify({"success": True, "message": f"CA injecté pour {rayon}"}), 200
     except Exception as e:
