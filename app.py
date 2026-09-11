@@ -44,28 +44,57 @@ def analyze_interim():
 @app.route("/inject-commerce", methods=["POST"])
 def inject_commerce():
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         rayon = data.get("rayon", "Général")
         semaine_iso = data.get("semaine_iso", "2026-S10")
-        
-        file_bytes = base64.b64decode(data.get("file_data"))
+        raw_b64 = data.get("file_data", "")
+
+        if not raw_b64:
+            return jsonify({"success": False, "message": "Fichier CSV absent"}), 400
+
+        # Nettoyage du préfixe base64 si présent (ex: data:text/csv;base64,...)
+        if "," in raw_b64:
+            raw_b64 = raw_b64.split(",")[1]
+
+        file_bytes = base64.b64decode(raw_b64)
+
+        # Lecture du CSV (gestion des séparateurs ; et ,)
         try:
             df = pd.read_csv(io.BytesIO(file_bytes), sep=";", on_bad_lines="skip")
             if len(df.columns) < 2:
-                file_bytes = base64.b64decode(data.get("file_data"))
                 df = pd.read_csv(io.BytesIO(file_bytes), sep=",", on_bad_lines="skip")
         except Exception as e:
-            return jsonify({"success": False, "message": f"Erreur CSV: {str(e)}"}), 400
-        
-        df = df.fillna("")
-        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
-        payload = {"rayon": rayon, "semaine_iso": semaine_iso, "donnees_financieres": df.to_dict(orient="records")}
-        
-        requests.post(f"{SUPABASE_URL}/rest/v1/historique_ca_rayons", json=payload, headers=headers, timeout=5)
-        return jsonify({"success": True, "message": f"CA injecté pour le rayon {rayon}"}), 200
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+            return jsonify({"success": False, "message": f"Erreur lecture CSV : {str(e)}"}), 400
 
+        df = df.fillna("")
+        
+        # Préparation de l'envoi vers Supabase
+        clean_url = SUPABASE_URL.rstrip('/')
+        endpoint = f"{clean_url}/rest/v1/historique_ca_rayons"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal"
+        }
+        
+        payload = {
+            "rayon": rayon,
+            "semaine_iso": semaine_iso,
+            "donnees_financieres": df.to_dict(orient="records")
+        }
+
+        res = requests.post(endpoint, json=payload, headers=headers, timeout=10)
+
+        if res.status_code in (200, 201):
+            return jsonify({"success": True, "message": f"CA injecté avec succès pour le rayon {rayon}"}), 200
+        else:
+            print(f"⚠️ ERREUR SUPABASE CA ({res.status_code}) : {res.text}")
+            return jsonify({"success": False, "message": f"Erreur Supabase ({res.status_code}) : {res.text}"}), 500
+
+    except Exception as e:
+        print(f"⚠️ CRASH INJECT COMMERCE : {str(e)}")
+        return jsonify({"success": False, "message": str(e)}), 500
 @app.route("/dernier-planning", methods=["GET"])
 def get_dernier_planning():
     endpoint = f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf?select=planning_json,equipiers_count,couverture_rush,sous_effectifs_count,gain_id_estime,semaine_iso&order=created_at.desc&limit=1"
