@@ -1,56 +1,175 @@
+import io
+import base64
+import re
 import os
 import requests
-from collections import defaultdict
+import pdfplumber
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://eilyxfhxmscuwbavkpzz.supabase.co").rstrip('/')
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7hGBQ_hMOZL9i7")
 
-class RetailMLPredictor:
-    def __init__(self):
-        self.headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+JOURS_DEFAUT = ["Di 27", "Lu 28", "Ma 29", "Me 30", "Je 01", "Ve 02", "Sa 03"]
+
+def parse_pdf_cell(cell_text):
+    if not cell_text or not str(cell_text).strip():
+        return []
+    
+    txt = str(cell_text).strip()
+    
+    if re.search(r"\b(RH|REPOS)\b", txt.upper()) and not re.search(r"\d{1,2}[\.\:hH]\d{1,2}", txt):
+        return [{"type": "Repos", "creneau": "00:00 - 00:00", "info": "Repos"}]
         
-    def _fetch_historique(self):
+    clean = txt.replace(',', '.').replace('h', '.').replace('H', '.')
+    clean = re.sub(r'(\d{1,2})\.\s+(\d{1,2})', r'\1.\2', clean)
+    clean = re.sub(r'(\d{1,2}\.\d{1,2})\s*[-–—|àa]\s*(\d{1,2}\.\d{1,2})', r'\1-\2', clean)
+    clean = re.sub(r'(\d{1,2}\.\d{1,2})\s*[-–—|àa]\s*(\d{1,2})(?!\d|\.)', r'\1-\2.00', clean)
+    
+    pattern = r"(\d{1,2})\.(\d{1,2})\s*[-–—|àa]\s*(\d{1,2})\.(\d{1,2})"
+    matches = re.findall(pattern, clean)
+    
+    results = []
+    for h1, m1, h2, m2 in matches:
+        if len(m1) == 1: m1 += "0"
+        if len(m2) == 1: m2 += "0"
+        
+        c = f"{h1.zfill(2)}:{m1.zfill(2)} - {h2.zfill(2)}:{m2.zfill(2)}"
+        results.append({"type": "Work", "creneau": c, "info": txt})
+        
+    return results
+
+def process_planning_pdf(file_b64):
+    try:
+        raw_b64 = file_b64.split(',')[1] if ',' in file_b64 else file_b64
+        pdf_bytes = base64.b64decode(raw_b64)
+        
+        planning_realise = []
+        collaborateurs = set()
+        seen_entries = set()
+        staff_en_rush = 0
+        semaine_iso = "2026-S40"
+        jours_detectes = JOURS_DEFAUT
+
+        mots_exclus_noms = [
+            "DECATHLON", "PLANNING", "TOTAL", "WELLNES", "FITNESS", "CYCLE", 
+            "MONTAGNE", "WORKSHOP", "ATELIER", "CAISSE", "ACCUEIL", "RH", 
+            "REPOS", "SERVICES", "GENERAL", "MANAGER", "EQUIPE", "HEURE", 
+            "CIBLE", "EMPLOYES", "REC", "PÉRIODE", "FUTUR", "SEPTEMBRE", "OCTOBRE", "AOUT"
+        ]
+
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+
+                semaine_match = re.search(r"\bS(\d{2})\b", text, re.IGNORECASE)
+                if semaine_match:
+                    semaine_iso = f"2026-S{semaine_match.group(1)}"
+
+                matches_jours = re.findall(r"\b(Di|Lu|Ma|Me|Je|Ve|Sa)\s*(\d{1,2})\b", text, re.IGNORECASE)
+                if len(matches_jours) >= 7:
+                    jours_detectes = [f"{j[0].capitalize()} {j[1]}" for j in matches_jours[:7]]
+
+                tables = page.extract_tables()
+                for table in tables:
+                    for row in table:
+                        if not row or len(row) < 4:
+                            continue
+                        
+                        nom_trouve = None
+                        for cell in row[:3]:
+                            if not cell: 
+                                continue
+                            cell_txt = str(cell).strip()
+                            matches = re.findall(r"([A-ZÀ-Ÿa-zà-ÿ]{2,}(?:[\s\-]+[A-ZÀ-Ÿa-zà-ÿ]{2,})+)", cell_txt)
+                            for candidate in matches:
+                                cand_clean = candidate.strip()
+                                cand_upper = cand_clean.upper()
+                                words = cand_upper.split()
+                                if not any(w in mots_exclus_noms for w in words) and not re.search(r"\d", cand_clean):
+                                    nom_trouve = cand_clean
+                                    break
+                            if nom_trouve:
+                                break
+
+                        if not nom_trouve:
+                            continue
+
+                        collaborateurs.add(nom_trouve)
+                        day_cells = row[-7:] if len(row) >= 7 else row
+
+                        for day_idx, cell in enumerate(day_cells):
+                            if day_idx >= len(jours_detectes):
+                                break
+                            
+                            jour_libelle = jours_detectes[day_idx]
+                            parsed_items = parse_pdf_cell(cell)
+
+                            for item in parsed_items:
+                                if item['type'] == 'Repos':
+                                    unique_key = f"{nom_trouve}_{jour_libelle}_REPOS"
+                                    if unique_key not in seen_entries:
+                                        seen_entries.add(unique_key)
+                                        planning_realise.append({
+                                            "nom": nom_trouve,
+                                            "jour": jour_libelle,
+                                            "creneau": "00:00 - 00:00",
+                                            "activite": "Repos",
+                                            "rayon_cible": "Ligne de Caisse",
+                                            "profil": "Hôte / Hôtesse Caisse",
+                                            "status": "Repos"
+                                        })
+
+                                elif item['type'] == 'Work':
+                                    creneau = item['creneau']
+                                    
+                                    try:
+                                        start_h = int(creneau.split(":")[0])
+                                        end_h = int(creneau.split("-")[1].strip().split(":")[0])
+                                        if start_h <= 15 and end_h >= 17:
+                                            staff_en_rush += 1
+                                    except: pass
+
+                                    unique_key = f"{nom_trouve}_{jour_libelle}_{creneau}"
+                                    if unique_key not in seen_entries:
+                                        seen_entries.add(unique_key)
+                                        planning_realise.append({
+                                            "nom": nom_trouve,
+                                            "jour": jour_libelle,
+                                            "creneau": creneau,
+                                            "activite": "Tenue de Caisse",
+                                            "rayon_cible": "Ligne de Caisse",
+                                            "profil": "Hôte / Hôtesse Caisse",
+                                            "status": "Planifié Caisse"
+                                        })
+
+        couverture_calculee = min(100, int((staff_en_rush / 4) * 100)) if staff_en_rush > 0 else 45
+        sous_effectif_calc = max(0, 4 - staff_en_rush)
+
+        payload_db = {
+            "nom_fichier": "planning_horoquartz.pdf",
+            "semaine_iso": semaine_iso,
+            "nom_equipe": "Équipe Caisse",
+            "equipiers_count": len(collaborateurs),
+            "couverture_rush": couverture_calculee,
+            "sous_effectifs_count": sous_effectif_calc,
+            "gain_id_estime": 6.1,
+            "planning_json": planning_realise,
+            "status_execution": "ARCHIVE"
+        }
+        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
         try:
-            res = requests.get(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf?select=planning_json,gain_id_estime", headers=self.headers, timeout=5)
-            return res.json() if res.status_code == 200 else []
-        except: return []
+            requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload_db, headers=headers, timeout=5)
+        except Exception as e_db:
+            print(f"Erreur Supabase: {e_db}")
 
-    def learn_patterns(self):
-        historique = self._fetch_historique()
-        if not historique:
-            return {"habitudes_repos": {}, "binomes_magiques": [], "rayons_habituels": {}, "confiance_modele": "Faible"}
+        return {
+            "equipe": "Équipe Caisse",
+            "semaine_iso": semaine_iso,
+            "equipiersCount": len(collaborateurs),
+            "couverture": couverture_calculee,
+            "sousEffectifs": sous_effectif_calc,
+            "planning": planning_realise
+        }
 
-        jours_repos = defaultdict(list)
-        binomes_perf = defaultdict(list)
-        rayons_historique = defaultdict(list)
-
-        for archive in historique:
-            for shift in archive.get("planning_json", []):
-                nom = shift.get("nom")
-                jour = shift.get("jour", "").split(" ")[0].capitalize()
-                rayon = shift.get("rayon_cible", "Ligne de Caisse")
-                
-                if shift.get("activite") in ["Repos / RH", "Repos"]: jours_repos[nom].append(jour)
-                else:
-                    if rayon and rayon != "Général": rayons_historique[nom].append(rayon)
-
-            presents_jour = defaultdict(list)
-            for shift in archive.get("planning_json", []):
-                if shift.get("activite") not in ["Repos / RH", "Repos"]:
-                    presents_jour[shift.get("jour", "").split(" ")[0].capitalize()].append(shift.get("nom"))
-
-            for jour, presents in presents_jour.items():
-                if len(presents) >= 2:
-                    for i in range(len(presents)):
-                        for j in range(i+1, len(presents)):
-                            binomes_perf[tuple(sorted([presents[i], presents[j]]))].append(archive.get("gain_id_estime", 0))
-
-        habitudes = {nom: max(set(jours), key=jours.count) for nom, jours in jours_repos.items() if jours}
-        rayons_habituels = {nom: max(set(rayons), key=rayons.count) for nom, rayons in rayons_historique.items() if rayons}
-        
-        meilleur_binome = []
-        if binomes_perf:
-            best_pair = max(binomes_perf.items(), key=lambda x: sum(x[1])/len(x[1]))
-            meilleur_binome.append({"collabs": list(best_pair[0]), "impact": f"+{round(sum(best_pair[1])/len(best_pair[1]), 1)}%"})
-
-        return {"habitudes_repos": habitudes, "binomes_magiques": meilleur_binome, "rayons_habituels": rayons_habituels, "confiance_modele": "Élevée"}
+    except Exception as e:
+        print(f"⚠️ Erreur process_planning_pdf: {str(e)}")
+        raise Exception(f"Échec de l'analyse PDF : {str(e)}")
