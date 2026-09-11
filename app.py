@@ -6,9 +6,9 @@ import pandas as pd
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-from pdf_staffing import process_planning_pdf
+from vision_staffing import process_planning_image
 from interim_parser import process_interim_csv
-from ai_agent import StaffingAutonomousAgent
+from ml_engine import RetailMLPredictor
 from planning_generator import PlanningGenerator
 
 app = Flask(__name__)
@@ -19,15 +19,15 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7
 
 @app.route("/", methods=["GET"])
 def health_check():
-    return jsonify({"status": "online", "mode": "Production ERP MLOps"}), 200
+    return jsonify({"status": "online", "mode": "Production OCR MLOps"}), 200
 
-@app.route("/analyze-planning-pdf", methods=["POST"])
-def analyze_pdf():
+@app.route("/analyze-image", methods=["POST"])
+def analyze_image():
     try:
         data = request.get_json()
         if not data or "file_data" not in data:
-            return jsonify({"success": False, "message": "Aucun fichier transmis."}), 400
-        result = process_planning_pdf(data.get("file_data"), filename=data.get("filename", "planning.pdf"))
+            return jsonify({"success": False, "message": "Aucune image transmise."}), 400
+        result = process_planning_image(data.get("file_data"))
         return jsonify({"success": True, "data": result}), 200
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
@@ -36,8 +36,6 @@ def analyze_pdf():
 def analyze_interim():
     try:
         data = request.get_json()
-        if not data or "file_data" not in data:
-            return jsonify({"success": False, "message": "Aucun fichier transmis."}), 400
         result = process_interim_csv(data.get("file_data"))
         return jsonify({"success": True, "data": result}), 200
     except Exception as e:
@@ -47,36 +45,23 @@ def analyze_interim():
 def inject_commerce():
     try:
         data = request.get_json()
-        if not data or "file_data" not in data:
-            return jsonify({"success": False, "message": "Aucun fichier transmis."}), 400
-            
         rayon = data.get("rayon", "Général")
         semaine_iso = data.get("semaine_iso", "2026-S10")
         
         file_bytes = base64.b64decode(data.get("file_data"))
-        
         try:
             df = pd.read_csv(io.BytesIO(file_bytes), sep=";", on_bad_lines="skip")
             if len(df.columns) < 2:
                 file_bytes = base64.b64decode(data.get("file_data"))
                 df = pd.read_csv(io.BytesIO(file_bytes), sep=",", on_bad_lines="skip")
         except Exception as e:
-            return jsonify({"success": False, "message": f"Erreur de lecture CSV: {str(e)}"}), 400
+            return jsonify({"success": False, "message": f"Erreur CSV: {str(e)}"}), 400
         
-        # 🔥 FIX ANTI-CRASH JSON : On remplace les NaN (Not a Number) par des chaînes vides
         df = df.fillna("")
-
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "rayon": rayon,
-            "semaine_iso": semaine_iso,
-            "donnees_financieres": df.to_dict(orient="records")
-        }
+        payload = {"rayon": rayon, "semaine_iso": semaine_iso, "donnees_financieres": df.to_dict(orient="records")}
         
-        res = requests.post(f"{SUPABASE_URL}/rest/v1/historique_ca_rayons", json=payload, headers=headers, timeout=5)
-        if res.status_code not in [200, 201]:
-            return jsonify({"success": False, "message": f"Erreur Supabase: {res.text}"}), 500
-
+        requests.post(f"{SUPABASE_URL}/rest/v1/historique_ca_rayons", json=payload, headers=headers, timeout=5)
         return jsonify({"success": True, "message": f"CA injecté pour le rayon {rayon}"}), 200
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
