@@ -2,8 +2,8 @@ import os
 import requests
 from collections import defaultdict
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://eilyxfhxmscuwbavkpzz.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7hGBQ_hMOZL9i7")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 class RetailMLPredictor:
     def __init__(self):
@@ -17,15 +17,8 @@ class RetailMLPredictor:
 
     def learn_patterns(self):
         historique = self._fetch_historique()
-        
-        # Valeurs par défaut si la base est vide (ex: au premier lancement)
-        if not historique or len(historique) < 1:
-            return {
-                "habitudes_repos": {"DIBOINE Simon": "Mardi", "CEAGLIO Valerie": "Jeudi"},
-                "binomes_magiques": [{"collabs": ["LIOTTA Clara", "DIBOINE Simon"], "impact": "+2.8%"}],
-                "rayons_habituels": {"LIOTTA Clara": "Ligne de Caisse", "HAMAZ Tharkoya": "Workshop"},
-                "confiance_modele": "Faible (Mode Entraînement)"
-            }
+        if not historique:
+            return {"habitudes_repos": {}, "binomes_magiques": [], "rayons_habituels": {}, "confiance_modele": "Faible"}
 
         jours_repos = defaultdict(list)
         binomes_perf = defaultdict(list)
@@ -37,12 +30,9 @@ class RetailMLPredictor:
                 jour = shift.get("jour", "").split(" ")[0].capitalize()
                 rayon = shift.get("rayon_cible", "Ligne de Caisse")
                 
-                if shift.get("activite") in ["Repos / RH", "Repos"]:
-                    jours_repos[nom].append(jour)
+                if shift.get("activite") in ["Repos / RH", "Repos"]: jours_repos[nom].append(jour)
                 else:
-                    # 🔥 Mémorisation du rayon affecté dans le passé
-                    if rayon and rayon != "Général":
-                        rayons_historique[nom].append(rayon)
+                    if rayon and rayon != "Général": rayons_historique[nom].append(rayon)
 
             presents_jour = defaultdict(list)
             for shift in archive.get("planning_json", []):
@@ -56,8 +46,6 @@ class RetailMLPredictor:
                             binomes_perf[tuple(sorted([presents[i], presents[j]]))].append(archive.get("gain_id_estime", 0))
 
         habitudes = {nom: max(set(jours), key=jours.count) for nom, jours in jours_repos.items() if jours}
-        
-        # 🔥 Calcul du "Rayon de prédilection" (le plus fréquent dans l'historique)
         rayons_habituels = {nom: max(set(rayons), key=rayons.count) for nom, rayons in rayons_historique.items() if rayons}
         
         meilleur_binome = []
@@ -65,9 +53,4 @@ class RetailMLPredictor:
             best_pair = max(binomes_perf.items(), key=lambda x: sum(x[1])/len(x[1]))
             meilleur_binome.append({"collabs": list(best_pair[0]), "impact": f"+{round(sum(best_pair[1])/len(best_pair[1]), 1)}%"})
 
-        return {
-            "habitudes_repos": habitudes, 
-            "binomes_magiques": meilleur_binome, 
-            "rayons_habituels": rayons_habituels,
-            "confiance_modele": "Élevée (Data Historique)"
-        }
+        return {"habitudes_repos": habitudes, "binomes_magiques": meilleur_binome, "rayons_habituels": rayons_habituels, "confiance_modele": "Élevée"}
