@@ -5,13 +5,7 @@ class MoteurPenibilite:
         self.fatigue_db = {
             "CEAGLIO Valerie": {"fatigue": 85, "profil": "Sniper ID"},
             "DIBOINE Simon": {"fatigue": 20, "profil": "Sprinter VMA"},
-            "LIOTTA Clara": {"fatigue": 45, "profil": "Expert Rush"},
-            "HAMAZ Tharkoya": {"fatigue": 30, "profil": "Polyvalent"},
-            "BITOUN Clara": {"fatigue": 15, "profil": "Polyvalent"},
-            "CLARION Fabienne": {"fatigue": 25, "profil": "Renfort"},
-            "D'ORIA Christelle": {"fatigue": 10, "profil": "Expert Vente"},
-            "RAOUX HUGO": {"fatigue": 40, "profil": "Renfort VMA"},
-            "BRUN MYLENE": {"fatigue": 50, "profil": "Renfort VMA"}
+            "LIOTTA Clara": {"fatigue": 45, "profil": "Expert Rush"}
         }
 
 class PlanningGenerator:
@@ -25,23 +19,19 @@ class PlanningGenerator:
 
     def generer_scenarios(self):
         binome = self.ml_insights["binomes_magiques"][0] if self.ml_insights["binomes_magiques"] else None
-        
         return {
             "insights_ml": self.ml_insights,
             "scenarios": {
-                "A": {"nom": f"Option A ({self.jour_cible})", "heures_consommees": int(self.budget * 0.9), "gain_id": "+1.2 %", "score_penibilite": "⚠️ Élevé", "description": "Budget strict, dispatch naturel.", "planning": self._generer_repartition("budget")},
-                "B": {"nom": f"Option B ({self.jour_cible})", "heures_consommees": int(self.budget * 1.15), "gain_id": binome["impact"] if binome else "+4.0 %", "score_penibilite": "Moyen", "description": "Priorité VMA (Tire les vendeurs vers la caisse).", "planning": self._generer_repartition("perf")},
-                "C": {"nom": f"Option C ({self.jour_cible})", "heures_consommees": self.budget, "gain_id": "+4.1 %", "score_penibilite": "✅ Optimal", "description": "MLOps (Respect des rayons et repos appris).", "planning": self._generer_repartition("equilibre")}
+                "A": {"nom": f"Option A", "heures_consommees": int(self.budget * 0.9), "gain_id": "+1.2 %", "score_penibilite": "⚠️ Élevé", "description": "Budget strict", "planning": self._generer_repartition("budget")},
+                "C": {"nom": f"Option MLOps", "heures_consommees": self.budget, "gain_id": "+4.1 %", "score_penibilite": "✅ Optimal", "description": "Respect des rayons", "planning": self._generer_repartition("equilibre")}
             }
         }
 
     def _generer_repartition(self, strategie):
         planning = []
         for nom in self.equipe:
-            profil = self.moteur_fatigue.fatigue_db[nom]
+            profil = self.moteur_fatigue.fatigue_db.get(nom, {"fatigue": 30, "profil": "Polyvalent"})
             activite, creneau = "Affecté", "10:00 - 17:00"
-            
-            # 🔥 L'IA ASSIGNE LE COLLABORATEUR À SON RAYON MÉMORISÉ !
             rayon_predit = self.ml_insights.get("rayons_habituels", {}).get(nom, "Ligne de Caisse")
 
             if strategie == "equilibre":
@@ -49,18 +39,9 @@ class PlanningGenerator:
                     activite, creneau = "Repos", "00:00 - 00:00"
                 elif profil["fatigue"] > 70:
                     activite, creneau = "Tâche Allégée", "09:00 - 14:00"
-            elif strategie == "perf" and profil["profil"] in ["Expert Rush", "Sniper ID", "Sprinter VMA"]:
-                creneau = "13:00 - 19:30"
-                activite = "Caisse"
-                rayon_predit = "Ligne de Caisse" # En mode Perf, on rapatrie les forts potentiels en caisse
-                
+                    
             planning.append({
-                "nom": nom, 
-                "jour": self.jour_cible, 
-                "profil": profil["profil"], 
-                "activite": activite, 
-                "creneau": creneau, 
-                "fatigue_init": profil["fatigue"], 
-                "rayon": rayon_predit
+                "nom": nom, "jour": self.jour_cible, "profil": profil["profil"], 
+                "activite": activite, "creneau": creneau, "fatigue_init": profil["fatigue"], "rayon": rayon_predit
             })
         return planning
