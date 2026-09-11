@@ -5,8 +5,9 @@ import re
 import requests
 from PIL import Image
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# 🔥 Sécurité : Vérifie que tes variables d'environnement sont bien renseignées sur Render
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://eilyxfhxmscuwbavkpzz.supabase.co").rstrip('/')
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_eE-LmmezezF4l6L3O7hGBQ_hMOZL9i7")
 
 def process_planning_image(file_b64):
     image_bytes = base64.b64decode(file_b64)
@@ -18,7 +19,6 @@ def process_planning_image(file_b64):
     img.save(buffer, format="JPEG", quality=70)
     compressed_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
 
-    # Activation du mode "Table" pour forcer l'OCR à respecter les colonnes Horoquartz
     payload = {
         'apikey': 'helloworld',
         'base64Image': 'data:image/jpeg;base64,' + compressed_b64,
@@ -32,7 +32,9 @@ def process_planning_image(file_b64):
         
     extracted_text = res.json()['ParsedResults'][0]['ParsedText']
     
-    # Détection de la semaine (ex: S40)
+    # Remplacement des tabulations générées par le mode Tableau
+    extracted_text = extracted_text.replace('\t', ' ')
+    
     semaine_match = re.search(r"\bS(\d{2})\b", extracted_text, re.IGNORECASE)
     semaine_iso = f"2026-S{semaine_match.group(1)}" if semaine_match else "S-INCONNUE"
 
@@ -51,7 +53,6 @@ def process_planning_image(file_b64):
     ]
     
     for line in lines:
-        # Regex assouplie (sans ^) pour capter le nom même s'il y a des décalages
         nom_match = re.search(r"([A-ZÀ-Ÿ]{3,}[\s\-]+[A-ZÀ-Ÿa-zà-ÿ]{3,})", line)
         
         if nom_match:
@@ -59,13 +60,13 @@ def process_planning_image(file_b64):
             if not any(k in nom_potentiel.upper() for k in mots_exclus_noms) and not re.search(r"\d", nom_potentiel):
                 nom_courant = nom_potentiel
                 
-        time_match = re.search(r"(\d{2}[\.\:]\d{2})\s*-\s*(\d{2}[\.\:]\d{2})\s*(.*)", line)
+        # 🔥 Regex Ultra-Permissive : Capte 09.00, 9h00, 09:00 - 13.00, 09h00 à 13h00
+        time_match = re.search(r"(\d{1,2})[\.\:hH](\d{2})\s*[-|à|a]\s*(\d{1,2})[\.\:hH](\d{2})(.*)", line)
         
         if time_match:
-            start = time_match.group(1).replace('.', ':')
-            end = time_match.group(2).replace('.', ':')
-            creneau = f"{start} - {end}"
-            infos_supp = time_match.group(3).upper() if time_match.group(3) else "GENERAL"
+            h_start, m_start, h_end, m_end, rest = time_match.groups()
+            creneau = f"{h_start.zfill(2)}:{m_start} - {h_end.zfill(2)}:{m_end}"
+            infos_supp = rest.upper() if rest else "GENERAL"
             
             rayon_detecte = "Général"
             activite = "Vente"
@@ -92,9 +93,7 @@ def process_planning_image(file_b64):
             
             if activite != "Repos":
                 try:
-                    debut_hour = int(start.split(":")[0])
-                    fin_hour = int(end.split(":")[0])
-                    if debut_hour <= 15 and fin_hour >= 17:
+                    if int(h_start) <= 15 and int(h_end) >= 17:
                         staff_en_rush += 1
                 except: pass
 
@@ -113,8 +112,14 @@ def process_planning_image(file_b64):
         "planning_json": planning_realise,
         "status_execution": "ARCHIVE"
     }
-    try: requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload_db, headers=headers, timeout=5)
-    except: pass
+    
+    # 🔥 Log d'erreur détaillé pour Supabase
+    try: 
+        res_db = requests.post(f"{SUPABASE_URL}/rest/v1/historique_plannings_pdf", json=payload_db, headers=headers, timeout=5)
+        if res_db.status_code not in (200, 201):
+            print(f"⚠️ ERREUR SUPABASE ({res_db.status_code}): {res_db.text}")
+    except Exception as e: 
+        print(f"⚠️ ERREUR RÉSEAU SUPABASE: {str(e)}")
 
     return {
         "equipe": "Équipe Magasin",
